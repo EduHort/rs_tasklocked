@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { timeAgo } from '../lib/format.ts'
 import type { ActiveAssignment, Tier } from '../lib/types.ts'
 import { Button } from './Button.tsx'
+import { ConfirmDialog } from './ConfirmDialog.tsx'
 import { TaskImage } from './TaskImage.tsx'
 import { TierBadge } from './TierBadge.tsx'
 
@@ -23,6 +25,8 @@ export function MyTaskCard({
   onRoll: () => void
   onComplete: () => void
 }) {
+  const [confirming, setConfirming] = useState(false)
+
   return (
     <section className="rounded-xl border border-accent/40 bg-surface p-5">
       <header className="mb-4 flex items-center justify-between gap-3">
@@ -57,10 +61,23 @@ export function MyTaskCard({
           </div>
 
           <div className="shrink-0 self-start">
-            <Button onClick={onComplete} loading={busy}>
+            <Button onClick={() => setConfirming(true)} loading={busy}>
               Concluir task
             </Button>
           </div>
+
+          <ConfirmDialog
+            open={confirming}
+            title="Concluir a task?"
+            message={`“${active.task.name}” sai do pool do grupo para sempre. Só dá para desfazer nos 10 minutos seguintes.`}
+            confirmLabel="Concluir"
+            busy={busy}
+            onConfirm={() => {
+              setConfirming(false)
+              onComplete()
+            }}
+            onCancel={() => setConfirming(false)}
+          />
         </div>
       ) : (
         <div className="flex flex-col items-start gap-4 py-2 sm:flex-row sm:items-center sm:justify-between">

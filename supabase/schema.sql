@@ -7,7 +7,8 @@
 -- Regras do jogo que este schema garante:
 --   1. Gerar/concluir sao acoes individuais (as funcoes so recebem o token do
 --      proprio membro, nunca um member_id de terceiro).
---   2. Duas pessoas nunca tem a mesma task ativa.
+--   2. Duas pessoas nunca tem a MESMA task (mesmo task_id). Tasks de NOME igual
+--      e id diferente sao permitidas — o dataset tem 161 pares repetidos.
 --   3. Task concluida sai do pool do grupo para sempre.
 --   4. Tiers sao sequenciais: todas as easy antes de qualquer medium, etc.
 -- =============================================================================
@@ -63,32 +64,19 @@ create table if not exists assignments (
   id           uuid primary key default gen_random_uuid(),
   member_id    uuid not null references members(id) on delete cascade,
   task_id      uuid not null references tasks(id),
-  -- Copia de tasks.name, preenchida por trigger. Existe so para sustentar o
-  -- indice unico de nome abaixo (o dataset tem 161 pares tier+nome repetidos).
-  task_name    text not null default '',
   status       text not null default 'active' check (status in ('active','completed')),
   assigned_at  timestamptz not null default now(),
   completed_at timestamptz
 );
 
-alter table assignments add column if not exists task_name text not null default '';
-
--- Mantem task_name em sincronia sem que nenhum insert precise lembrar dele.
-create or replace function assignments_fill_task_name()
-returns trigger language plpgsql as $$
-begin
-  select name into new.task_name from tasks where id = new.task_id;
-  return new;
-end;
-$$;
-
-drop trigger if exists assignments_fill_task_name_trg on assignments;
-create trigger assignments_fill_task_name_trg
-  before insert or update of task_id on assignments
-  for each row execute function assignments_fill_task_name();
-
-update assignments a set task_name = t.name
-  from tasks t where t.id = a.task_id and a.task_name = '';
+-- Migracao: a regra de "nome unico entre as ativas" caiu. Duas pessoas podem
+-- ficar com tasks de mesmo nome, desde que sejam ids diferentes. Some tudo o
+-- que existia so para sustentar aquela regra (indice, trigger e a copia do
+-- nome). Idempotente: nada acontece em um banco novo.
+drop trigger  if exists assignments_fill_task_name_trg on assignments;
+drop function if exists assignments_fill_task_name();
+drop index    if exists assignments_active_name_unique;
+alter table assignments drop column if exists task_name;
 
 -- -----------------------------------------------------------------------------
 -- Os dois indices que sustentam as regras do jogo.
@@ -101,14 +89,9 @@ create unique index if not exists assignments_one_active_per_member
   on assignments (member_id) where status = 'active';
 
 -- Regra: uma task NUNCA e atribuida duas vezes (nem ativa, nem concluida).
+-- E o unico bloqueio de duplicidade que sobrou: e por task_id, nao por nome.
 create unique index if not exists assignments_task_unique
   on assignments (task_id);
-
--- Regra: dois membros nunca veem o MESMO TEXTO de task ao mesmo tempo.
--- O indice de task_id nao cobre isso: ha 161 pares (tier, nome) duplicados no
--- dataset, entao dois ids diferentes podem exibir exatamente a mesma frase.
-create unique index if not exists assignments_active_name_unique
-  on assignments (task_name) where status = 'active';
 
 create index if not exists assignments_completed_at_idx
   on assignments (completed_at desc) where status = 'completed';
@@ -131,6 +114,7 @@ revoke all on tasks, group_state, members, assignments from anon, authenticated;
 -- Erros usam codigos estaveis no formato "CODIGO" para o front traduzir:
 --   INVALID_CODE · GROUP_FULL · INVALID_TOKEN · ALREADY_ACTIVE
 --   NO_ACTIVE_TASK · TIER_LOCKED · ALL_DONE · UNDO_EXPIRED · NOT_INITIALIZED
+--   TASK_NOT_FOUND · ALREADY_COMPLETED · TASK_TAKEN
 -- =============================================================================
 
 -- Resolve o token -> member_id. Toda funcao comeca por aqui: e o unico jeito
@@ -312,11 +296,10 @@ declare
   v_task      tasks%rowtype;
   v_attempt   int := 0;
 begin
-  -- Serializa os sorteios do grupo. Sem isso, dois membros clicando no mesmo
-  -- instante leem o pool antes de a outra transacao commitar e podem escolher
-  -- tasks diferentes com o MESMO nome (o indice de task_id nao pega isso).
-  -- Com 5 pessoas o custo e irrelevante: o sorteio leva microssegundos.
-  -- Liberado automaticamente no commit (xact lock).
+  -- Serializa os sorteios do grupo: dois membros clicando no mesmo instante
+  -- leem o pool antes de a outra transacao commitar e podem cair na MESMA task,
+  -- gastando as retentativas abaixo a toa. Com 5 pessoas o custo e irrelevante:
+  -- o sorteio leva microssegundos. Liberado automaticamente no commit.
   perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
 
   if exists (select 1 from assignments where member_id = v_member_id and status = 'active') then
@@ -336,16 +319,9 @@ begin
     select t.id into v_task_id
     from tasks t
     where t.tier_order = v_tier
-      -- nunca atribuida (nem ativa, nem concluida)
+      -- nunca atribuida (nem ativa, nem concluida). O nome NAO entra aqui:
+      -- duas pessoas podem ficar com tasks de mesmo nome e ids diferentes.
       and not exists (select 1 from assignments a where a.task_id = t.id)
-      -- e sem colidir com o NOME de uma task ativa: ha 161 pares (tier, nome)
-      -- duplicados no dataset, e duas pessoas com o mesmo texto na tela pareceria bug
-      and not exists (
-        select 1
-        from assignments a
-        join tasks t2 on t2.id = a.task_id
-        where a.status = 'active' and t2.name = t.name
-      )
     order by random()
     limit 1;
 
@@ -411,7 +387,8 @@ declare
   v_member_id uuid := auth_member(p_token);
   v_assignment assignments%rowtype;
 begin
-  -- Mesmo lock do roll_task: reativar uma task tambem mexe no conjunto de ativas.
+  -- Mesmo lock do roll_task: garante que ninguem sorteie entre a checagem de
+  -- "ja tem ativa" e o update que reativa a task.
   perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
 
   if exists (select 1 from assignments where member_id = v_member_id and status = 'active') then
@@ -432,14 +409,9 @@ begin
     raise exception 'UNDO_EXPIRED';
   end if;
 
-  begin
-    update assignments
-    set status = 'active', completed_at = null
-    where id = v_assignment.id;
-  exception when unique_violation then
-    -- outro membro esta com uma task de nome identico ativa agora
-    raise exception 'NAME_TAKEN';
-  end;
+  update assignments
+  set status = 'active', completed_at = null
+  where id = v_assignment.id;
 
   return json_build_object('assignment_id', v_assignment.id);
 end;
@@ -488,6 +460,129 @@ end;
 $$;
 
 -- -----------------------------------------------------------------------------
+-- list_pending: todas as tasks que o grupo AINDA NAO concluiu, de todos os
+-- tiers, com filtro opcional por tier e por texto do nome.
+--
+-- Diferente do roll_task, aqui nao ha gating de tier: e uma lista de consulta,
+-- e a tela deixa concluir manualmente qualquer uma (ver complete_task_by_id).
+-- `taken` marca as que estao ativas com alguem agora.
+-- -----------------------------------------------------------------------------
+create or replace function list_pending(
+  p_token  uuid,
+  p_limit  int  default 50,
+  p_offset int  default 0,
+  p_tier   text default null,
+  p_search text default null
+)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_limit  int  := least(greatest(coalesce(p_limit, 50), 1), 200);
+  v_offset int  := greatest(coalesce(p_offset, 0), 0);
+  v_tier   text := nullif(trim(coalesce(p_tier, '')), '');
+  v_search text := nullif(trim(coalesce(p_search, '')), '');
+begin
+  perform auth_member(p_token);
+
+  return json_build_object(
+    'total', (
+      select count(*)::int
+      from tasks t
+      where not exists (
+          select 1 from assignments a where a.task_id = t.id and a.status = 'completed'
+        )
+        and (v_tier   is null or t.tier = v_tier)
+        and (v_search is null or t.name ilike '%' || v_search || '%')
+    ),
+    'items', coalesce((
+      select json_agg(x order by x.tier_order, x.name, x.id)
+      from (
+        select
+          t.id,
+          t.tier,
+          t.tier_order,
+          t.name,
+          t.short_name,
+          t.tip,
+          t.wiki_link,
+          t.image_link,
+          t.display_item_id,
+          (a.id is not null) as taken,
+          mem.name           as holder_name
+        from tasks t
+        left join assignments a on a.task_id = t.id and a.status = 'active'
+        left join members mem   on mem.id = a.member_id
+        where not exists (
+            select 1 from assignments c where c.task_id = t.id and c.status = 'completed'
+          )
+          and (v_tier   is null or t.tier = v_tier)
+          and (v_search is null or t.name ilike '%' || v_search || '%')
+        order by t.tier_order, t.name, t.id
+        limit v_limit offset v_offset
+      ) x
+    ), '[]'::json)
+  );
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- complete_task_by_id: conclui uma task escolhida na lista de pendentes, sem
+-- precisar sorteia-la antes. Serve para registrar o que ja foi feito no jogo.
+--
+-- Sem task atribuida  -> cria o assignment ja concluido em nome de quem chamou.
+-- Ativa com quem chamou -> conclui (mesmo efeito do complete_task).
+-- Ativa com OUTRA pessoa -> TASK_TAKEN. Concluir a task de outro membro
+--   continua fora do alcance da API, como no resto do app.
+-- -----------------------------------------------------------------------------
+create or replace function complete_task_by_id(p_token uuid, p_task_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id  uuid := auth_member(p_token);
+  v_assignment assignments%rowtype;
+  v_new_id     uuid;
+begin
+  -- Mesmo lock do roll_task: sem ele, alguem pode sortear esta task entre a
+  -- leitura abaixo e o insert, e o insert morreria com unique_violation crua.
+  perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
+
+  if p_task_id is null or not exists (select 1 from tasks where id = p_task_id) then
+    raise exception 'TASK_NOT_FOUND';
+  end if;
+
+  select * into v_assignment from assignments where task_id = p_task_id;
+
+  if not found then
+    insert into assignments (member_id, task_id, status, completed_at)
+    values (v_member_id, p_task_id, 'completed', now())
+    returning id into v_new_id;
+
+    return json_build_object('assignment_id', v_new_id);
+  end if;
+
+  if v_assignment.status = 'completed' then
+    raise exception 'ALREADY_COMPLETED';
+  end if;
+
+  if v_assignment.member_id <> v_member_id then
+    raise exception 'TASK_TAKEN';
+  end if;
+
+  update assignments
+  set status = 'completed', completed_at = now()
+  where id = v_assignment.id;
+
+  return json_build_object('assignment_id', v_assignment.id);
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
 -- set_group_code: define/troca o codigo do grupo (guardado como hash bcrypt).
 -- Usada apenas pelo script local `npm run set-code`, com a service_role key.
 -- NUNCA e concedida ao anon.
@@ -522,13 +617,15 @@ grant execute on function roll_task(uuid)                 to anon, authenticated
 grant execute on function complete_task(uuid)             to anon, authenticated;
 grant execute on function undo_complete(uuid)             to anon, authenticated;
 grant execute on function list_completed(uuid, int, int)  to anon, authenticated;
+grant execute on function complete_task_by_id(uuid, uuid) to anon, authenticated;
+grant execute on function list_pending(uuid, int, int, text, text) to anon, authenticated;
 
 -- Faz o PostgREST recarregar o cache na hora, em vez de esperar o proximo ciclo.
 notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 4 tabelas, 3 indices unicos, 9 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 4 tabelas, 2 indices unicos, 11 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
@@ -537,11 +634,11 @@ select
   (select count(*) from pg_indexes
     where schemaname = 'public'
       and indexname in ('assignments_one_active_per_member',
-                        'assignments_task_unique',
-                        'assignments_active_name_unique'))               as indices_unicos,
+                        'assignments_task_unique'))                      as indices_unicos,
   (select count(*) from information_schema.routines
     where routine_schema = 'public'
       and routine_name in ('join_group','get_state','roll_task','complete_task',
-                           'undo_complete','list_completed','set_group_code',
+                           'undo_complete','list_completed','list_pending',
+                           'complete_task_by_id','set_group_code',
                            'auth_member','current_tier_order'))          as funcoes,
   (select count(*) from tasks)                                           as tasks_carregadas;

@@ -69,6 +69,32 @@ export type CompletedPage = {
   items: CompletedEntry[]
 }
 
+/**
+ * Uma task que o grupo ainda nao concluiu — item da tela "A fazer".
+ * Nao e um `Task` completo: `list_pending` deixa de fora `verification` e
+ * `tags`, que a lista nao usa.
+ */
+export type PendingTask = {
+  id: string
+  tier: Tier
+  tier_order: number
+  name: string
+  short_name: string | null
+  tip: string
+  wiki_link: string
+  image_link: string
+  display_item_id: number
+  /** true quando a task esta ativa com alguem agora */
+  taken: boolean
+  /** nome de quem esta com ela, ou null se estiver livre */
+  holder_name: string | null
+}
+
+export type PendingTaskPage = {
+  total: number
+  items: PendingTask[]
+}
+
 export type Session = {
   memberId: string
   token: string

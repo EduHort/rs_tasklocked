@@ -58,13 +58,14 @@ for round in $(seq 1 $ROUNDS); do
   gating=$($PSQL -c "$GATING_SQL")
   tiers=$($PSQL -c "select string_agg(distinct t.tier,'/') from assignments a join tasks t on t.id=a.task_id where a.status='active'")
 
+  # nome_repetido e so informativo: nomes iguais com ids diferentes sao
+  # permitidos desde que o bloqueio por nome saiu do schema.
   printf "rodada %d: %2d rolls | ativas=%2s distintas=%2s (%s) | dup_task=%s dup_membro=%s nome_repetido=%s gating=%s\n" \
     "$round" "$got" "$act" "$distinct_act" "${tiers:-nenhuma}" "$dup" "$two_active" "$dup_name" "$gating"
 
   [ "$dup" = "0" ]              || { echo "  !! TASK ATRIBUIDA 2x"; fail=1; }
   [ "$act" = "$distinct_act" ]  || { echo "  !! DUAS PESSOAS COM A MESMA TASK ATIVA"; fail=1; }
   [ "$two_active" = "0" ]       || { echo "  !! MEMBRO COM 2 TASKS ATIVAS"; fail=1; }
-  [ "$dup_name" = "0" ]         || { echo "  !! DOIS MEMBROS COM O MESMO NOME DE TASK"; fail=1; }
   [ "$gating" = "0" ]           || { echo "  !! TIER FUROU O GATING"; fail=1; }
 
   for i in $(seq 1 $N_MEMBERS); do

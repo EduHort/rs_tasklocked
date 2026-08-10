@@ -23,6 +23,26 @@
   --color-tier-master: #c0503f;
 }
 
+/*
+  O preflight do Tailwind v4 nao poe mais cursor:pointer em button — o v3 punha.
+  Sem isto todo botao do app fica com a setinha, so os <a> mostram a mãozinha.
+  Vai no layer base para qualquer utilitario cursor-* solto continuar ganhando.
+*/
+@layer base {
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  a[href],
+  select,
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+}
+
 html,
 body,
 #root {

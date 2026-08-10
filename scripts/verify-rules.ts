@@ -9,7 +9,7 @@
  * ou num projeto Supabase separado. As 990 tasks nao sao tocadas.
  */
 import { adminClient, anonClient } from './_env.ts'
-import type { GroupState, Task } from '../src/lib/types.ts'
+import type { GroupState, PendingTaskPage, Task } from '../src/lib/types.ts'
 
 if (!process.argv.includes('--yes-destructive')) {
   console.error(`
@@ -35,6 +35,13 @@ function check(label: string, ok: boolean, detail = '') {
 async function errorCode(fn: string, args: Record<string, unknown>): Promise<string> {
   const { error } = await anon.rpc(fn, args)
   return error ? error.message : 'OK'
+}
+
+/** Roda uma RPC que precisa dar certo e devolve o payload. */
+async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
+  const { data, error } = await anon.rpc(fn, args)
+  if (error) throw new Error(`${fn}: ${error.message}`)
+  return data as T
 }
 
 async function reset() {
@@ -73,7 +80,7 @@ async function state(token: string): Promise<GroupState> {
 async function activeRows() {
   const { data } = await admin
     .from('assignments')
-    .select('member_id, task_id, task_name, status')
+    .select('member_id, task_id, status')
     .eq('status', 'active')
   return data ?? []
 }
@@ -111,12 +118,39 @@ check('os 4 rolls deram certo', tasks.length === 4, rolled.find((r) => r.error)?
 const active = await activeRows()
 check('5 tasks ativas', active.length === 5)
 check('todas com task_id DIFERENTE', new Set(active.map((a) => a.task_id)).size === 5)
-check('todas com NOME diferente', new Set(active.map((a) => a.task_name)).size === 5)
 check('cada membro com exatamente 1', new Set(active.map((a) => a.member_id)).size === 5)
 
 const { data: allTasks } = await admin.from('tasks').select('id, tier')
 const tierById = new Map((allTasks ?? []).map((t) => [t.id as string, t.tier as string]))
 check('todas as 5 sao EASY', active.every((a) => tierById.get(a.task_id as string) === 'easy'))
+
+console.log('\n3b. tasks de MESMO nome podem ficar com pessoas diferentes')
+// O bloqueio por nome caiu: so o task_id e unico. Aqui p1 e p2 ficam de
+// proposito com dois ids diferentes que exibem exatamente o mesmo texto.
+const membersById = new Map((await state(t1)).members.map((m) => [m.name, m.id]))
+await admin
+  .from('assignments')
+  .delete()
+  .eq('status', 'active')
+  .in('member_id', [membersById.get('p1')!, membersById.get('p2')!])
+
+const { data: takenNow } = await admin.from('assignments').select('task_id')
+const takenIdsNow = new Set((takenNow ?? []).map((r) => r.task_id as string))
+const { data: easyTasks } = await admin.from('tasks').select('id, name').eq('tier', 'easy')
+const freeByName = new Map<string, string[]>()
+for (const t of easyTasks ?? []) {
+  if (takenIdsNow.has(t.id as string)) continue
+  freeByName.set(t.name as string, [...(freeByName.get(t.name as string) ?? []), t.id as string])
+}
+const dupPair = [...freeByName.values()].find((ids) => ids.length >= 2)
+check('o dataset tem nomes de easy repetidos', !!dupPair)
+
+const { error: dupErr } = await admin.from('assignments').insert([
+  { member_id: membersById.get('p1'), task_id: dupPair![0], status: 'active' },
+  { member_id: membersById.get('p2'), task_id: dupPair![1], status: 'active' },
+])
+check('duas ativas com o MESMO nome sao aceitas', !dupErr, dupErr?.message)
+check('e o grupo segue com 5 ativas', (await activeRows()).length === 5)
 
 console.log('\n4. concluir e lista compartilhada')
 await anon.rpc('complete_task', { p_token: t1 })
@@ -161,7 +195,68 @@ check('current_tier virou medium', after.current_tier === 'medium')
 const { data: nextTask } = await anon.rpc('roll_task', { p_token: t1 })
 check('agora o roll cai em MEDIUM', (nextTask as Task | null)?.tier === 'medium')
 
-console.log('\n6. integridade e seguranca')
+console.log('\n6. lista de pendentes e conclusao direta')
+const pendingArgs = { p_token: t1, p_limit: 200, p_offset: 0 }
+const listPending = (extra: Record<string, unknown> = {}) =>
+  rpc<PendingTaskPage>('list_pending', { ...pendingArgs, ...extra })
+
+const doneSoFar = (await state(t1)).completed_total
+const pending = await listPending()
+check('total de pendentes = 990 - concluidas', pending.total === 990 - doneSoFar, `${pending.total}`)
+check('nenhuma easy sobrou na lista', pending.items.every((i) => i.tier !== 'easy'))
+
+// A ativa do p1 e uma medium sorteada acima. Busca pelo nome dela em vez de
+// varrer a pagina: assim o teste nao depende de ela cair nos 200 primeiros.
+const p1Task = (await state(t1)).members.find((m) => m.name === 'p1')!.active!.task
+const mineInList = (await listPending({ p_search: p1Task.name })).items.find(
+  (i) => i.id === p1Task.id,
+)
+check(
+  'a task ativa aparece marcada com o dono',
+  mineInList?.taken === true,
+  mineInList?.holder_name ?? undefined,
+)
+check('e o dono e o p1', mineInList?.holder_name === 'p1')
+
+const onlyHard = await listPending({ p_tier: 'hard' })
+check(
+  'filtro por tier so traz hard',
+  onlyHard.items.length > 0 && onlyHard.items.every((i) => i.tier === 'hard'),
+)
+
+const searched = await listPending({ p_search: 'wintertodt' })
+check(
+  'busca por texto filtra pelo nome',
+  searched.items.length > 0 && searched.items.every((i) => /wintertodt/i.test(i.name)),
+)
+
+const t2 = tokens.get('p2')!
+check(
+  'p2 nao conclui a task ativa de p1 -> TASK_TAKEN',
+  (await errorCode('complete_task_by_id', { p_token: t2, p_task_id: p1Task.id })) === 'TASK_TAKEN',
+)
+check(
+  'id inexistente -> TASK_NOT_FOUND',
+  (await errorCode('complete_task_by_id', {
+    p_token: t1,
+    p_task_id: '00000000-0000-0000-0000-000000000000',
+  })) === 'TASK_NOT_FOUND',
+)
+
+const freeTask = pending.items.find((i) => !i.taken)!
+await rpc('complete_task_by_id', { p_token: t1, p_task_id: freeTask.id })
+check('a task ativa de p1 continua intacta', (await activeRows()).length === 1)
+check(
+  'a concluida sumiu dos pendentes',
+  !(await listPending({ p_search: freeTask.name })).items.some((i) => i.id === freeTask.id),
+)
+check(
+  'concluir a mesma de novo -> ALREADY_COMPLETED',
+  (await errorCode('complete_task_by_id', { p_token: t1, p_task_id: freeTask.id })) ===
+    'ALREADY_COMPLETED',
+)
+
+console.log('\n7. integridade e seguranca')
 const { data: everything } = await admin.from('assignments').select('task_id, member_id, status')
 const ids = (everything ?? []).map((a) => a.task_id as string)
 check('nenhuma task atribuida 2x', new Set(ids).size === ids.length)

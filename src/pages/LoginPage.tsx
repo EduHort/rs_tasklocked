@@ -50,7 +50,7 @@ export function LoginPage({ onLogin }: { onLogin: (session: Session) => void }) 
             autoFocus
             autoComplete="off"
             spellCheck={false}
-            placeholder="ABC123"
+            placeholder="ex: ABC123"
             className="rounded-md border border-border bg-surface px-3 py-2 font-mono
               tracking-[0.3em] uppercase outline-none focus:border-accent"
           />
@@ -66,7 +66,7 @@ export function LoginPage({ onLogin }: { onLogin: (session: Session) => void }) 
             required
             maxLength={20}
             autoComplete="off"
-            placeholder="Edu"
+            placeholder="ex: GuGumatador"
             className="rounded-md border border-border bg-surface px-3 py-2 outline-none
               focus:border-accent"
           />

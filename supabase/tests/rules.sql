@@ -66,8 +66,34 @@ select t_assert('as 5 tasks sao DIFERENTES',
 select t_assert('as 5 sao todas EASY',
   (select count(distinct t.tier)::text || ':' || min(t.tier)
      from assignments a join tasks t on t.id=a.task_id where a.status='active'), '1:easy');
-select t_assert('nenhum NOME de task repetido entre os ativos',
-  (select count(distinct t.name)::text from assignments a join tasks t on t.id=a.task_id where a.status='active'), '5');
+
+\echo '\n--- 2b. duas pessoas PODEM ficar com tasks de MESMO nome ---'
+-- O dataset tem 161 pares (tier, nome) repetidos. Sao ids diferentes, e nada
+-- mais bloqueia isso: o unico indice de duplicidade e o de task_id.
+select t.name as dup_name from tasks t
+  where t.tier='easy'
+    and not exists (select 1 from assignments a where a.task_id = t.id)
+  group by t.name having count(*) >= 2
+  order by t.name limit 1 \gset
+delete from assignments a using members m
+  where m.id = a.member_id and m.name in ('Edu','Ana') and a.status='active';
+select t_assert('atribuir dois ids do MESMO nome -> aceito',
+  t_try(format($$insert into assignments (member_id, task_id, status)
+    select (select id from members where name = case x.rn when 1 then 'Edu' else 'Ana' end),
+           x.id, 'active'
+    from (select id, row_number() over (order by id) as rn
+            from tasks where tier='easy' and name=%L order by id limit 2) x$$, :'dup_name')), 'OK');
+select t_assert('Edu e Ana estao com o mesmo texto na tela',
+  (select count(distinct t.name)::text from assignments a
+     join tasks t on t.id=a.task_id join members m on m.id=a.member_id
+   where a.status='active' and m.name in ('Edu','Ana')), '1');
+select t_assert('e o grupo segue com 5 ativas',
+  (select count(*)::text from assignments where status='active'), '5');
+select t_assert('mesmo assim, o MESMO id duas vezes -> recusado',
+  t_try($$insert into assignments (member_id, task_id, status)
+    select (select id from members where name='Bruno'), task_id, 'completed'
+    from assignments where status='active' limit 1$$),
+  'duplicate key value violates unique constraint "assignments_task_unique"');
 
 \echo '\n--- 3. concluir ---'
 select t_assert('complete com token nulo -> INVALID_TOKEN',
@@ -139,5 +165,56 @@ update assignments set completed_at = now() - interval '30 minutes'
   where status='completed' and member_id=(select id from members where name='Bruno');
 select t_assert('undo depois de 10min -> UNDO_EXPIRED',
   t_try($$select undo_complete((select token from tk where name='Bruno'))$$), 'UNDO_EXPIRED');
+
+\echo '\n--- 9. list_pending e complete_task_by_id ---'
+-- Neste ponto: easy 100% concluida e a Ana com uma medium ativa (secao 8).
+select t_assert('total de pendentes = 990 - concluidas',
+  (((list_pending((select token from tk where name='Ana'))->>'total')::int =
+    990 - (select count(*) from assignments where status='completed'))::text), 'true');
+select t_assert('nenhuma easy sobrou nos pendentes',
+  (select count(*)::text from json_array_elements(
+     list_pending((select token from tk where name='Ana'), 200)->'items') e
+   where e->>'tier' = 'easy'), '0');
+select t_assert('filtro por tier so traz hard',
+  (select count(distinct e->>'tier')::text || ':' || min(e->>'tier') from json_array_elements(
+     list_pending((select token from tk where name='Edu'), 50, 0, 'hard')->'items') e), '1:hard');
+select t_assert('busca por texto: nenhum resultado fora do termo',
+  (select count(*) filter (where e->>'name' !~* 'wintertodt')::text from json_array_elements(
+     list_pending((select token from tk where name='Edu'), 50, 0, null, 'wintertodt')->'items') e), '0');
+select t_assert('busca por texto: e traz pelo menos um',
+  ((select count(*) from json_array_elements(
+     list_pending((select token from tk where name='Edu'), 50, 0, null, 'wintertodt')->'items') e) > 0)::text, 'true');
+
+-- concluir direto uma task que ninguem sorteou
+select id as free_task from tasks t where t.tier='hard'
+  and not exists (select 1 from assignments a where a.task_id = t.id)
+  order by id limit 1 \gset
+select t_assert('concluir direto uma task livre -> OK',
+  t_try(format($$select complete_task_by_id((select token from tk where name='Ana'), %L)$$, :'free_task')), 'OK');
+select t_assert('ela entrou como concluida em nome da Ana',
+  (select m.name from assignments a join members m on m.id=a.member_id
+    where a.task_id = :'free_task'::uuid and a.status='completed'), 'Ana');
+select t_assert('e sumiu da lista de pendentes',
+  (select count(*)::text from json_array_elements(
+     list_pending((select token from tk where name='Ana'), 200, 0, 'hard')->'items') e
+   where e->>'id' = :'free_task'), '0');
+select t_assert('concluir a mesma de novo -> ALREADY_COMPLETED',
+  t_try(format($$select complete_task_by_id((select token from tk where name='Ana'), %L)$$, :'free_task')),
+  'ALREADY_COMPLETED');
+select t_assert('id que nao existe -> TASK_NOT_FOUND',
+  t_try($$select complete_task_by_id((select token from tk where name='Ana'),
+    '00000000-0000-0000-0000-000000000000')$$), 'TASK_NOT_FOUND');
+
+-- a task ativa de outra pessoa continua fora do alcance
+select a.task_id as ana_task from assignments a join members m on m.id=a.member_id
+  where m.name='Ana' and a.status='active' \gset
+select t_assert('concluir a ativa de outro membro -> TASK_TAKEN',
+  t_try(format($$select complete_task_by_id((select token from tk where name='Edu'), %L)$$, :'ana_task')),
+  'TASK_TAKEN');
+select t_assert('a Ana conclui a propria ativa -> OK',
+  t_try(format($$select complete_task_by_id((select token from tk where name='Ana'), %L)$$, :'ana_task')), 'OK');
+select t_assert('e ela ficou sem task ativa',
+  (select count(*)::text from assignments a join members m on m.id=a.member_id
+    where m.name='Ana' and a.status='active'), '0');
 
 \echo '\n=== TODOS OS TESTES PASSARAM ===\n'

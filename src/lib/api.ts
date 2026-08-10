@@ -1,5 +1,5 @@
 import { supabase } from './supabase.ts'
-import type { CompletedPage, GroupState, Session, Task } from './types.ts'
+import type { CompletedPage, GroupState, PendingTaskPage, Session, Task, Tier } from './types.ts'
 
 /**
  * Mensagens para os codigos de erro que as funcoes do Postgres levantam.
@@ -16,8 +16,10 @@ const MESSAGES: Record<string, string> = {
     'As tasks que sobraram deste tier já estão com outras pessoas. Espere alguém concluir.',
   ALL_DONE: 'Acabou: o grupo concluiu todas as 990 tasks.',
   UNDO_EXPIRED: 'Só dá para desfazer até 10 minutos depois de concluir.',
-  NAME_TAKEN: 'Outra pessoa está com uma task de mesmo nome agora. Tente daqui a pouco.',
   NOT_INITIALIZED: 'O grupo ainda não foi configurado. Rode `npm run set-code`.',
+  TASK_NOT_FOUND: 'Essa task não existe mais. Recarregue a página.',
+  ALREADY_COMPLETED: 'Essa task já foi concluída pelo grupo.',
+  TASK_TAKEN: 'Essa task está ativa com outra pessoa. Só quem está com ela pode concluir.',
 }
 
 export class ApiError extends Error {
@@ -84,4 +86,29 @@ export function listCompleted(token: string, limit = 50, offset = 0): Promise<Co
     p_limit: limit,
     p_offset: offset,
   })
+}
+
+/** Tasks que o grupo ainda nao concluiu, de todos os tiers. */
+export function listPending(
+  token: string,
+  { limit = 50, offset = 0, tier = null as Tier | null, search = '' } = {},
+): Promise<PendingTaskPage> {
+  return call<PendingTaskPage>('list_pending', {
+    p_token: token,
+    p_limit: limit,
+    p_offset: offset,
+    p_tier: tier,
+    p_search: search || null,
+  })
+}
+
+/**
+ * Conclui uma task escolhida na lista, sem precisar sortea-la antes.
+ * Falha com TASK_TAKEN se ela estiver ativa com outro membro.
+ */
+export function completeTaskById(
+  token: string,
+  taskId: string,
+): Promise<{ assignment_id: string }> {
+  return call('complete_task_by_id', { p_token: token, p_task_id: taskId })
 }

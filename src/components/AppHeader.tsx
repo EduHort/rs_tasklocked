@@ -18,6 +18,9 @@ export function AppHeader({ name, onLogout }: { name: string; onLogout: () => vo
           <NavLink to="/completed" className={linkClass}>
             Concluídas
           </NavLink>
+          <NavLink to="/pending" className={linkClass}>
+            A fazer
+          </NavLink>
         </nav>
 
         <div className="ml-auto flex items-center gap-3 text-sm text-muted">
