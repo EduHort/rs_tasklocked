@@ -11,24 +11,25 @@
     "seed": "tsx scripts/seed-tasks.ts",
     "set-code": "tsx scripts/set-code.ts",
     "reset": "tsx scripts/reset.ts",
-    "verify": "tsx scripts/verify-rules.ts"
+    "verify": "tsx scripts/verify-rules.ts",
+    "upgrade": "npx npm-check-updates -u && npm install"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.0"
+    "@supabase/supabase-js": "^2.112.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.0.0",
-    "@types/node": "^22.0.0",
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.0",
-    "dotenv": "^16.4.5",
-    "tailwindcss": "^4.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.6.0",
-    "vite": "^5.4.0"
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "dotenv": "^17.4.2",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1"
   }
 }
