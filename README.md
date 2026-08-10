@@ -116,7 +116,11 @@ só é usada pelos scripts locais.
 
 O [public/_redirects](public/_redirects) cuida do fallback de SPA para `/board`, `/completed` e
 `/pending`, e o
-[.node-version](.node-version) fixa o Node 22 no build.
+[.node-version](.node-version) fixa o Node 24 no build.
+
+> O build image v3 do Pages **ignora** o campo `engines` do `package.json` — `.node-version`,
+> `.nvmrc` ou a variável `NODE_VERSION` são as únicas formas de fixar a versão. O `24.18.0` é uma das
+> versões já pré-instaladas na imagem, então o pin não custa download no build.
 
 ---
 
@@ -170,7 +174,12 @@ supabase/
   schema.sql    tabelas, índices, RLS e as 9 funções
   tests/        suíte SQL + teste de concorrência
 scripts/        seed-tasks · set-code · verify-rules
+public/         _redirects · robots.txt · favicon.ico · apple-touch-icon.png · og.png
 ```
+
+Os três ícones em `public/` são recortes quadrados da `logo.jpeg` da raiz (que fica como fonte).
+Para trocar a logo: substitua o arquivo e gere de novo o `favicon.ico` (16/32/48), o
+`apple-touch-icon.png` (180×180) e o `og.png` (1200×630, logo centralizada sobre `--color-bg`).
 
 Restyle: as cores estão todas em variáveis no topo de [src/index.css](src/index.css).
 
@@ -187,6 +196,13 @@ Restyle: as cores estão todas em variáveis no topo de [src/index.css](src/inde
   outra pessoa continua fora do alcance (`TASK_TAKEN`).
 - **Sem skip:** se alguém pegar uma task inviável, ela trava para o grupo. Para devolvê-la ao pool,
   apague o assignment no dashboard do Supabase.
+- **Fora da busca:** o `index.html` tem `<meta name="robots" content="noindex">` — é uma ferramenta
+  privada de grupo. O [public/robots.txt](public/robots.txt) **não** bloqueia o crawl de propósito:
+  bloquear seria mais fraco, porque o robô nunca leria a `noindex` e a URL ainda poderia aparecer na
+  busca via link de terceiro.
+- **Preview de link:** as tags Open Graph do `index.html` apontam para `https://rs-tasklocked.pages.dev`
+  em **URL absoluta** — boa parte dos unfurlers ignora caminho relativo. Se o domínio mudar (domínio
+  próprio, outro projeto no Pages), o `og:url` e o `og:image` precisam ser atualizados junto.
 - **Free tier pausa após 7 dias sem uso.** Um GitHub Action semanal batendo na API resolve.
 - **179 easy** = ~36 por pessoa antes de ver medium. Se cansar, o ajuste é só no `having` do passo 3
   do `roll_task`.

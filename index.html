@@ -3,7 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
     <title>Task Locked — OSRS</title>
+    <meta
+      name="description"
+      content="Randomizador de tasks de Old School RuneScape para um grupo de até 5 pessoas."
+    />
+
+    <!--
+      Ferramenta privada de um grupo: nada aqui deve entrar na busca. A noindex e
+      quem faz esse trabalho — o public/robots.txt de proposito NAO bloqueia o
+      crawl, senao o robo nunca chegaria a ler esta linha.
+    -->
+    <meta name="robots" content="noindex, nofollow" />
+
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#10100c" />
+
+    <!-- Preview ao colar o link no WhatsApp/Discord. og:image e og:url precisam
+         ser ABSOLUTAS: boa parte dos unfurlers ignora caminho relativo. Se o
+         dominio mudar, e aqui que se troca. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Task Locked" />
+    <meta property="og:url" content="https://rs-tasklocked.pages.dev/" />
+    <meta property="og:title" content="Task Locked — OSRS" />
+    <meta
+      property="og:description"
+      content="Randomizador de tasks de Old School RuneScape para um grupo de até 5 pessoas."
+    />
+    <meta property="og:image" content="https://rs-tasklocked.pages.dev/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
     <div id="root"></div>

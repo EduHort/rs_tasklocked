@@ -1,0 +1,9 @@
+# O site fica fora da busca pela meta robots "noindex" do index.html.
+#
+# De proposito NAO ha "Disallow: /" aqui: bloquear o crawl e mais fraco, nao
+# mais forte. Sem poder buscar a pagina, o robo nunca le a noindex — e a URL
+# ainda pode aparecer nos resultados se alguem linkar de fora. Deixando o crawl
+# livre, ele le a noindex e tira o site do indice de verdade.
+
+User-agent: *
+Allow: /
