@@ -66,7 +66,7 @@ export function LoginPage({ onLogin }: { onLogin: (session: Session) => void }) 
             required
             maxLength={20}
             autoComplete="off"
-            placeholder="ex: gugumatador"
+            placeholder="ex: gugamatador"
             className="rounded-md border border-border bg-surface px-3 py-2 outline-none
               focus:border-accent"
           />
