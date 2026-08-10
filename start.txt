@@ -1,0 +1,21 @@
+Quero fazer um site simples para mim e uns amigos. O site deverá ter um banco de dados gratuito 
+(de preferência firebase ou supabase, qual for melhor para o projeto), um sistema de login simples, e ter como base os
+arquivos json que estão aqui na raiz do projeto. Esses arquivos são Tasks, ou seja, tarefas que devem ser feitas no jogo
+Old School Runescape. A ideia é o site ser um randomizador dessas tasks, só que para um grupo de pessoas. Funciona assim:
+Um grupo de até 5 pessoas podem entrar no site, e podem rodar uma task. Todos devem ter uma task diferente. Vou mandar prints
+de como a interface deve parecer depois quando formos fazer a ui, mas deve haver uma interface onde seja possível ver qual a sua task
+e qual as tasks do grupo. Deve haver um botão de gerar uma task (esse botão gera uma task para o usuário que clicar nele), e um botão
+para fizalizar a task (também para o usuário que clicar nele). Então cada usuário do grupo terá uma task diferente, e após concluir
+essa task no jogo, ele clica em concluir no site. Deve haver uma lista de tasks concluídas, só que essa lista deve ser compartilhada
+entre o grupo. Ou seja, quando um usuário conclui uma task, ela não deve aparecer para os outros usuários. As tasks devem ser
+randomizadas em ordem de easy, medium, hard, elite e master (já estão separadas assim nos .json). Então o grupo deve concluir todas
+as tasks easy antes das medium poderem aparecer na randomização, e assim por diante.
+
+Sobre o site, vamos fazer algo simples em typescript, com tailwind. De início terá apenas três páginas, um inicial para login,  
+uma para gerar/concluir as tasks (que também vai mostrar as tasks dos outros do grupo), e uma para ver as tasks concluidas. 
+Para o login, vamos deixar bem simples. Ao entrar no site o usuário vai precisar colocar um código (senha) para poder participar,
+e deve escolher um nome para ser identificado no grupo. Não terá email ou senha próprios, apenas um nome. Esse código pode ser gerado
+aleatoriamente. Para o banco, como eu disse, vamos usar o firebase ou o supabase, que tem tiers gratuitos, e eu pensei em deixar o site
+no cloudflare pages, que também tem um tier gratuito.
+
+Faça um plano para o site, e me pergunte qualquer dúvida que aparecer ou algo que faltou esplicar ou decidir.

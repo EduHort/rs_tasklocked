@@ -1,0 +1,37 @@
+@import 'tailwindcss';
+
+/*
+  Paleta provisoria, inspirada na UI do OSRS. Esta toda em variaveis para o
+  restyle depois dos prints mexer so daqui, sem tocar nos componentes.
+*/
+@theme {
+  --color-bg: #10100c;
+  --color-surface: #1c1a14;
+  --color-surface-2: #292519;
+  --color-border: #3f3826;
+  --color-ink: #efe6d0;
+  --color-muted: #a89d80;
+  --color-accent: #d8b45a;
+  --color-accent-ink: #211c0e;
+  --color-danger: #c0503f;
+  --color-ok: #6f9c4a;
+
+  --color-tier-easy: #6f9c4a;
+  --color-tier-medium: #4a86b8;
+  --color-tier-hard: #9a6bbf;
+  --color-tier-elite: #d08a3a;
+  --color-tier-master: #c0503f;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
