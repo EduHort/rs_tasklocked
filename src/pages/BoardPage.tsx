@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
+import { ExtraTaskCard } from '../components/ExtraTaskCard.tsx'
 import { MemberCard } from '../components/MemberCard.tsx'
 import { MyTaskCard } from '../components/MyTaskCard.tsx'
 import { TierProgressBar } from '../components/TierProgressBar.tsx'
 import { useGroupState } from '../hooks/useGroupState.ts'
-import { completeTask, rollTask } from '../lib/api.ts'
+import { completeExtraTask, completeTask, rollTask } from '../lib/api.ts'
 import type { Session } from '../lib/types.ts'
 
 export function BoardPage({
@@ -60,6 +61,15 @@ export function BoardPage({
         onRoll={() => void run(() => rollTask(session.token))}
         onComplete={() => void run(() => completeTask(session.token))}
       />
+
+      {/* So aparece com uma extra pegue: quem quer uma escolhe em /completed. */}
+      {me?.extra && (
+        <ExtraTaskCard
+          extra={me.extra}
+          busy={busy}
+          onComplete={() => void run(() => completeExtraTask(session.token))}
+        />
+      )}
 
       <section>
         <h2 className="mb-3 text-sm font-bold uppercase tracking-widest text-muted">

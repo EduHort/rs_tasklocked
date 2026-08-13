@@ -97,16 +97,50 @@ create index if not exists assignments_completed_at_idx
   on assignments (completed_at desc) where status = 'completed';
 
 -- -----------------------------------------------------------------------------
+-- Tasks EXTRA: repetir uma task que o grupo JA concluiu.
+--
+-- Ficam numa tabela separada de propósito. Em `assignments` existe
+-- `assignments_task_unique`, que garante que uma task nunca tem dois
+-- assignments — e uma extra aponta justamente para uma task que ja tem o seu.
+-- Guardar as extras a parte preserva aquele indice intacto: ele continua sendo
+-- a garantia das regras do pool, que as extras nao afetam em nada (nao mudam o
+-- tier atual nem o contador de 990).
+-- -----------------------------------------------------------------------------
+
+create table if not exists extra_assignments (
+  id           uuid primary key default gen_random_uuid(),
+  member_id    uuid not null references members(id) on delete cascade,
+  task_id      uuid not null references tasks(id),
+  status       text not null default 'active' check (status in ('active','completed')),
+  assigned_at  timestamptz not null default now(),
+  completed_at timestamptz
+);
+
+-- No maximo UMA extra ativa por membro.
+create unique index if not exists extra_assignments_one_active_per_member
+  on extra_assignments (member_id) where status = 'active';
+
+-- A mesma pessoa nunca pega a mesma task de extra duas vezes (vale para os dois
+-- status). E o que faz o contador da /completed contar PESSOAS, nao repeticoes.
+create unique index if not exists extra_assignments_member_task_unique
+  on extra_assignments (member_id, task_id);
+
+create index if not exists extra_assignments_task_idx
+  on extra_assignments (task_id) where status = 'completed';
+
+-- -----------------------------------------------------------------------------
 -- Seguranca: RLS ligada SEM nenhuma policy => acesso direto negado para todos.
 -- Todo acesso passa pelas funcoes security definer abaixo.
 -- -----------------------------------------------------------------------------
 
-alter table tasks       enable row level security;
-alter table group_state enable row level security;
-alter table members     enable row level security;
-alter table assignments enable row level security;
+alter table tasks             enable row level security;
+alter table group_state       enable row level security;
+alter table members           enable row level security;
+alter table assignments       enable row level security;
+alter table extra_assignments enable row level security;
 
-revoke all on tasks, group_state, members, assignments from anon, authenticated;
+revoke all on tasks, group_state, members, assignments, extra_assignments
+  from anon, authenticated;
 
 -- =============================================================================
 -- Funcoes RPC
@@ -115,6 +149,7 @@ revoke all on tasks, group_state, members, assignments from anon, authenticated;
 --   INVALID_CODE · GROUP_FULL · INVALID_TOKEN · ALREADY_ACTIVE
 --   NO_ACTIVE_TASK · TIER_LOCKED · ALL_DONE · UNDO_EXPIRED · NOT_INITIALIZED
 --   TASK_NOT_FOUND · ALREADY_COMPLETED · TASK_TAKEN
+--   NOT_COMPLETED_YET · EXTRA_ALREADY_ACTIVE · EXTRA_ALREADY_DONE · NO_EXTRA_TASK
 -- =============================================================================
 
 -- Resolve o token -> member_id. Toda funcao comeca por aqui: e o unico jeito
@@ -248,10 +283,17 @@ begin
             'assignment_id', a.id,
             'assigned_at',   a.assigned_at,
             'task',          to_jsonb(t) - 'tier_order'
-          ) end as active
+          ) end as active,
+          case when e.id is null then null else json_build_object(
+            'assignment_id', e.id,
+            'assigned_at',   e.assigned_at,
+            'task',          to_jsonb(et) - 'tier_order'
+          ) end as extra
         from members mem
-        left join assignments a on a.member_id = mem.id and a.status = 'active'
-        left join tasks t       on t.id = a.task_id
+        left join assignments a       on a.member_id = mem.id and a.status = 'active'
+        left join tasks t             on t.id = a.task_id
+        left join extra_assignments e on e.member_id = mem.id and e.status = 'active'
+        left join tasks et            on et.id = e.task_id
       ) m
     ), '[]'::json),
 
@@ -272,6 +314,7 @@ begin
       ) p
     ), '[]'::json),
 
+    -- Continua sendo so o pool: as extras nao entram nas 990.
     'completed_total', (select count(*)::int from assignments where status = 'completed')
   );
 end;
@@ -419,6 +462,11 @@ $$;
 
 -- -----------------------------------------------------------------------------
 -- list_completed: lista compartilhada do grupo, mais recentes primeiro.
+--
+-- Uma linha por task que saiu do pool. As extras NAO viram linha nova: elas
+-- incrementam `completed_count`, o contador de quantas PESSOAS do grupo ja
+-- fizeram aquela task (denominador = `member_total`, no topo do payload), e
+-- entram em `completions` com o nome e a data de quem as fez.
 -- -----------------------------------------------------------------------------
 create or replace function list_completed(p_token uuid, p_limit int default 50, p_offset int default 0)
 returns json
@@ -427,18 +475,27 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  v_limit  int := least(greatest(coalesce(p_limit, 50), 1), 200);
-  v_offset int := greatest(coalesce(p_offset, 0), 0);
+  v_member_id uuid := auth_member(p_token);
+  v_limit     int  := least(greatest(coalesce(p_limit, 50), 1), 200);
+  v_offset    int  := greatest(coalesce(p_offset, 0), 0);
 begin
-  perform auth_member(p_token);
-
   return json_build_object(
     'total', (select count(*)::int from assignments where status = 'completed'),
+
+    'member_total', (select count(*)::int from members),
+
+    -- Bloqueia pegar uma segunda extra sem precisar tentar e tomar erro.
+    'has_active_extra', exists (
+      select 1 from extra_assignments
+      where member_id = v_member_id and status = 'active'
+    ),
+
     'items', coalesce((
       select json_agg(x order by x.completed_at desc)
       from (
         select
           a.id,
+          a.task_id,
           a.completed_at,
           mem.name as member_name,
           t.tier,
@@ -446,7 +503,53 @@ begin
           t.short_name,
           t.wiki_link,
           t.image_link,
-          t.display_item_id
+          t.display_item_id,
+
+          -- 1 (quem tirou do pool) + quantas extras ja concluidas.
+          1 + (
+            select count(*)
+            from extra_assignments e
+            where e.task_id = a.task_id and e.status = 'completed'
+          )::int as completed_count,
+
+          -- Toda conclusao daquela task: [{ name, completed_at, extra }].
+          -- Quem tirou a task do pool vem sempre primeiro — `take_extra_task` so
+          -- deixa pegar o que ja esta concluido, entao nenhuma extra pode ter
+          -- sido feita antes dela.
+          jsonb_build_array(jsonb_build_object(
+            'name',         mem.name,
+            'completed_at', a.completed_at,
+            'extra',        false
+          )) || coalesce((
+            select jsonb_agg(
+              jsonb_build_object(
+                'name',         m2.name,
+                'completed_at', e.completed_at,
+                'extra',        true
+              ) order by e.completed_at
+            )
+            from extra_assignments e
+            join members m2 on m2.id = e.member_id
+            where e.task_id = a.task_id and e.status = 'completed'
+          ), '[]'::jsonb) as completions,
+
+          (
+            a.member_id = v_member_id
+            or exists (
+              select 1 from extra_assignments e
+              where e.task_id = a.task_id
+                and e.member_id = v_member_id
+                and e.status = 'completed'
+            )
+          ) as done_by_me,
+
+          exists (
+            select 1 from extra_assignments e
+            where e.task_id = a.task_id
+              and e.member_id = v_member_id
+              and e.status = 'active'
+          ) as extra_active
+
         from assignments a
         join members mem on mem.id = a.member_id
         join tasks t     on t.id = a.task_id
@@ -582,6 +685,149 @@ begin
 end;
 $$;
 
+-- =============================================================================
+-- Tasks EXTRA
+--
+-- Um membro escolhe uma task JA CONCLUIDA pelo grupo e a pega como "extra",
+-- ao lado da task normal. A extra nao mexe no pool: nao entra em `assignments`,
+-- nao muda o tier atual, nao muda o contador de 990. Ela so incrementa o
+-- contador de PESSOAS por task que a /completed mostra.
+--
+-- Regras:
+--   1. Varias pessoas PODEM estar com a mesma extra ao mesmo tempo — a task ja
+--      saiu do pool, entao nao ha exclusividade a proteger.
+--   2. No maximo UMA extra ativa por membro.
+--   3. A mesma pessoa nunca faz a mesma task duas vezes: nem quem a concluiu no
+--      pool pode pega-la de extra, nem da para repetir uma extra ja feita.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- take_extra_task: pega uma task ja concluida pelo grupo como extra.
+-- Sempre para o dono do token — como no resto da API, nao ha parametro
+-- member_id, entao e impossivel pegar uma extra em nome de outra pessoa.
+-- -----------------------------------------------------------------------------
+create or replace function take_extra_task(p_token uuid, p_task_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_owner_id  uuid;
+  v_task      tasks%rowtype;
+  v_extra_id  uuid;
+  v_at        timestamptz;
+begin
+  if p_task_id is null or not exists (select 1 from tasks where id = p_task_id) then
+    raise exception 'TASK_NOT_FOUND';
+  end if;
+
+  -- So vale para o que o grupo JA concluiu: a extra e uma repetida, nunca um
+  -- atalho para furar o gating de tier do roll_task.
+  select a.member_id into v_owner_id
+  from assignments a
+  where a.task_id = p_task_id and a.status = 'completed';
+
+  if not found then
+    raise exception 'NOT_COMPLETED_YET';
+  end if;
+
+  -- Regra 3, parte 1: quem concluiu a task no pool ja a fez.
+  if v_owner_id = v_member_id then
+    raise exception 'EXTRA_ALREADY_DONE';
+  end if;
+
+  -- Regra 3, parte 2: e ninguem repete uma extra que ja pegou.
+  if exists (
+    select 1 from extra_assignments
+    where member_id = v_member_id and task_id = p_task_id
+  ) then
+    raise exception 'EXTRA_ALREADY_DONE';
+  end if;
+
+  -- Regra 2. Checado aqui para dar mensagem boa; o indice unico e a garantia.
+  if exists (
+    select 1 from extra_assignments
+    where member_id = v_member_id and status = 'active'
+  ) then
+    raise exception 'EXTRA_ALREADY_ACTIVE';
+  end if;
+
+  insert into extra_assignments (member_id, task_id)
+  values (v_member_id, p_task_id)
+  returning id, assigned_at into v_extra_id, v_at;
+
+  select * into v_task from tasks where id = p_task_id;
+
+  return json_build_object(
+    'assignment_id', v_extra_id,
+    'assigned_at',   v_at,
+    'task',          to_jsonb(v_task) - 'tier_order'
+  );
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- complete_extra_task: conclui a extra ativa do dono do token.
+--
+-- Nao mexe em `assignments`: a task ja estava concluida pelo grupo e continua
+-- contando UMA vez nas 990. O efeito visivel e o contador de pessoas na
+-- /completed subir de n para n+1.
+-- -----------------------------------------------------------------------------
+create or replace function complete_extra_task(p_token uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_extra_id  uuid;
+begin
+  update extra_assignments
+  set status = 'completed', completed_at = now()
+  where member_id = v_member_id and status = 'active'
+  returning id into v_extra_id;
+
+  if v_extra_id is null then
+    raise exception 'NO_EXTRA_TASK';
+  end if;
+
+  return json_build_object('assignment_id', v_extra_id);
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- abandon_extra_task: devolve a extra ativa sem concluir.
+--
+-- Existe por causa da regra 3: sem isso, escolher a extra errada travaria
+-- aquela pessoa para sempre — ela nao poderia pegar outra (regra 2) nem
+-- desistir dessa. Apaga a linha, entao a task volta a ficar disponivel como
+-- extra para ela no futuro. Nao registra nada em lugar nenhum.
+-- -----------------------------------------------------------------------------
+create or replace function abandon_extra_task(p_token uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_extra_id  uuid;
+begin
+  delete from extra_assignments
+  where member_id = v_member_id and status = 'active'
+  returning id into v_extra_id;
+
+  if v_extra_id is null then
+    raise exception 'NO_EXTRA_TASK';
+  end if;
+
+  return json_build_object('assignment_id', v_extra_id);
+end;
+$$;
+
 -- -----------------------------------------------------------------------------
 -- set_group_code: define/troca o codigo do grupo (guardado como hash bcrypt).
 -- Usada apenas pelo script local `npm run set-code`, com a service_role key.
@@ -619,26 +865,34 @@ grant execute on function undo_complete(uuid)             to anon, authenticated
 grant execute on function list_completed(uuid, int, int)  to anon, authenticated;
 grant execute on function complete_task_by_id(uuid, uuid) to anon, authenticated;
 grant execute on function list_pending(uuid, int, int, text, text) to anon, authenticated;
+grant execute on function take_extra_task(uuid, uuid)     to anon, authenticated;
+grant execute on function complete_extra_task(uuid)       to anon, authenticated;
+grant execute on function abandon_extra_task(uuid)        to anon, authenticated;
 
 -- Faz o PostgREST recarregar o cache na hora, em vez de esperar o proximo ciclo.
 notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 4 tabelas, 2 indices unicos, 11 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 14 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
     where table_schema = 'public'
-      and table_name in ('tasks','members','assignments','group_state')) as tabelas,
+      and table_name in ('tasks','members','assignments','group_state',
+                         'extra_assignments'))                           as tabelas,
   (select count(*) from pg_indexes
     where schemaname = 'public'
       and indexname in ('assignments_one_active_per_member',
-                        'assignments_task_unique'))                      as indices_unicos,
+                        'assignments_task_unique',
+                        'extra_assignments_one_active_per_member',
+                        'extra_assignments_member_task_unique'))         as indices_unicos,
   (select count(*) from information_schema.routines
     where routine_schema = 'public'
       and routine_name in ('join_group','get_state','roll_task','complete_task',
                            'undo_complete','list_completed','list_pending',
                            'complete_task_by_id','set_group_code',
-                           'auth_member','current_tier_order'))          as funcoes,
+                           'auth_member','current_tier_order',
+                           'take_extra_task','complete_extra_task',
+                           'abandon_extra_task'))                        as funcoes,
   (select count(*) from tasks)                                           as tasks_carregadas;

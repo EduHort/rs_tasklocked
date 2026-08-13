@@ -46,6 +46,7 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
 
 async function reset() {
   const steps = [
+    admin.from('extra_assignments').delete().gt('assigned_at', '1970-01-01'),
     admin.from('assignments').delete().gt('assigned_at', '1970-01-01'),
     admin.from('members').delete().gt('created_at', '1970-01-01'),
     admin.rpc('set_group_code', { p_code: CODE }),
@@ -261,7 +262,7 @@ const { data: everything } = await admin.from('assignments').select('task_id, me
 const ids = (everything ?? []).map((a) => a.task_id as string)
 check('nenhuma task atribuida 2x', new Set(ids).size === ids.length)
 
-for (const table of ['members', 'tasks', 'assignments', 'group_state']) {
+for (const table of ['members', 'tasks', 'assignments', 'group_state', 'extra_assignments']) {
   const { data, error } = await anon.from(table).select('*').limit(1)
   check(`anon nao le a tabela ${table}`, !!error || (data ?? []).length === 0, error?.message)
 }

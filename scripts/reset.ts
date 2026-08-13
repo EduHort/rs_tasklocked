@@ -3,7 +3,7 @@
  *
  *   npm run reset -- --yes
  *
- * Apaga: membros e assignments (tasks ativas e concluídas).
+ * Apaga: membros, assignments (tasks ativas e concluídas) e as tasks extra.
  * Mantém: as 990 tasks e o código do grupo — schema e seed continuam de pé.
  *
  * Para trocar o código depois: npm run set-code
@@ -35,14 +35,17 @@ async function count(table: string): Promise<number> {
 const before = {
   membros: await count('members'),
   assignments: await count('assignments'),
+  extras: await count('extra_assignments'),
   tasks: await count('tasks'),
 }
 
 console.log(`
-  antes:  ${before.membros} membros, ${before.assignments} assignments, ${before.tasks} tasks`)
+  antes:  ${before.membros} membros, ${before.assignments} assignments, ${before.extras} extras, ${before.tasks} tasks`)
 
 // `not id is null` casa com todas as linhas — o PostgREST exige um filtro no delete.
-for (const table of ['assignments', 'members']) {
+// `extra_assignments` sairia junto pelo cascade de `members`, mas apagar antes
+// deixa o relatorio abaixo honesto sobre o que foi removido.
+for (const table of ['extra_assignments', 'assignments', 'members']) {
   const { error } = await supabase.from(table).delete().not('id', 'is', null)
   if (error) {
     console.error(`\nfalhou ao limpar ${table}: ${error.message}\n`)
@@ -53,12 +56,13 @@ for (const table of ['assignments', 'members']) {
 const after = {
   membros: await count('members'),
   assignments: await count('assignments'),
+  extras: await count('extra_assignments'),
   tasks: await count('tasks'),
 }
 
-console.log(`  depois: ${after.membros} membros, ${after.assignments} assignments, ${after.tasks} tasks`)
+console.log(`  depois: ${after.membros} membros, ${after.assignments} assignments, ${after.extras} extras, ${after.tasks} tasks`)
 
-if (after.membros || after.assignments) {
+if (after.membros || after.assignments || after.extras) {
   console.error('\n  a limpeza não zerou tudo.\n')
   process.exit(1)
 }

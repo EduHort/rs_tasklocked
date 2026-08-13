@@ -1,5 +1,13 @@
 import { supabase } from './supabase.ts'
-import type { CompletedPage, GroupState, PendingTaskPage, Session, Task, Tier } from './types.ts'
+import type {
+  ActiveAssignment,
+  CompletedPage,
+  GroupState,
+  PendingTaskPage,
+  Session,
+  Task,
+  Tier,
+} from './types.ts'
 
 /**
  * Mensagens para os codigos de erro que as funcoes do Postgres levantam.
@@ -20,6 +28,11 @@ const MESSAGES: Record<string, string> = {
   TASK_NOT_FOUND: 'Essa task não existe mais. Recarregue a página.',
   ALREADY_COMPLETED: 'Essa task já foi concluída pelo grupo.',
   TASK_TAKEN: 'Essa task está ativa com outra pessoa. Só quem está com ela pode concluir.',
+  NOT_COMPLETED_YET:
+    'O grupo ainda não concluiu essa task. Só dá para repetir o que já saiu do pool.',
+  EXTRA_ALREADY_ACTIVE: 'Você já tem uma task extra. Conclua ou devolva ela primeiro.',
+  EXTRA_ALREADY_DONE: 'Você já fez essa task.',
+  NO_EXTRA_TASK: 'Você não tem nenhuma task extra ativa.',
 }
 
 export class ApiError extends Error {
@@ -48,7 +61,13 @@ async function call<T>(fn: string, args: Record<string, unknown>): Promise<T> {
     }
 
     // O PostgREST devolve a mensagem do `raise exception` em error.message.
-    const code = Object.keys(MESSAGES).find((key) => error.message.includes(key))
+    // Vale o codigo MAIS LONGO que casar, nao o primeiro: uns sao prefixados por
+    // outros (EXTRA_ALREADY_ACTIVE contem ALREADY_ACTIVE) e o primeiro match
+    // daria a mensagem errada, dependendo so da ordem do objeto acima.
+    const code = Object.keys(MESSAGES)
+      .filter((key) => error.message.includes(key))
+      .sort((a, b) => b.length - a.length)[0]
+
     throw new ApiError(code ?? 'UNKNOWN', code ? MESSAGES[code] : error.message)
   }
 
@@ -111,4 +130,26 @@ export function completeTaskById(
   taskId: string,
 ): Promise<{ assignment_id: string }> {
   return call('complete_task_by_id', { p_token: token, p_task_id: taskId })
+}
+
+/**
+ * Pega como EXTRA uma task que o grupo ja concluiu — ela fica ao lado da task
+ * normal e nao mexe no pool das 990. So uma extra por vez, e ninguem repete uma
+ * task que ja fez.
+ */
+export function takeExtraTask(token: string, taskId: string): Promise<ActiveAssignment> {
+  return call<ActiveAssignment>('take_extra_task', { p_token: token, p_task_id: taskId })
+}
+
+/**
+ * Conclui a extra ativa: sobe o contador de pessoas daquela task na /completed.
+ * E a unica saida — o app nao devolve extra.
+ *
+ * A RPC `abandon_extra_task` continua no banco de proposito, mas so como
+ * valvula manual pelo dashboard do Supabase: se alguem pegar uma extra
+ * inviavel, e o unico jeito de destrava-la. Nao ha wrapper aqui porque nenhuma
+ * tela pode chamar isso.
+ */
+export function completeExtraTask(token: string): Promise<{ assignment_id: string }> {
+  return call('complete_extra_task', { p_token: token })
 }

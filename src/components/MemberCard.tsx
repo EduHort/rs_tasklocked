@@ -35,6 +35,12 @@ export function MemberCard({ member }: { member: Member }) {
         ) : (
           <p className="mt-1 text-sm text-muted">sem task no momento</p>
         )}
+
+        {member.extra && (
+          <p className="mt-1 truncate text-xs text-muted" title={member.extra.task.name}>
+            <span className="text-accent">+ extra</span> {member.extra.task.name}
+          </p>
+        )}
       </div>
     </div>
   )
