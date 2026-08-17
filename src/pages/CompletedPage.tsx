@@ -4,7 +4,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog.tsx'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
 import { TaskImage } from '../components/TaskImage.tsx'
 import { TierBadge } from '../components/TierBadge.tsx'
-import { isAuthError, listCompleted, takeExtraTask } from '../lib/api.ts'
+import { completeExtraById, isAuthError, listCompleted, takeExtraTask } from '../lib/api.ts'
 import { formatDateTime } from '../lib/format.ts'
 import type { CompletedEntry, Session } from '../lib/types.ts'
 
@@ -13,10 +13,16 @@ const PAGE = 50
 /**
  * O que o grupo ja tirou do pool — uma linha por task, mais recentes primeiro.
  *
- * Cada linha traz o contador de quantas PESSOAS do grupo ja fizeram aquela
- * task (n/total de membros) e o botao de pegar a task como EXTRA: repetir uma
- * concluida, ao lado da task normal. A extra nao mexe nas 990, so sobe o
- * contador quando concluida (no board).
+ * Cada linha traz o contador de quantas PESSOAS do grupo ja fizeram aquela task
+ * (n/total de membros) e duas acoes:
+ *
+ *   Completar   — registra na hora que voce fez aquela task. E o caminho de
+ *                 quem concluiu a task de passagem: funciona mesmo com uma
+ *                 extra ativa na mao, porque nao passa pelo estado "extra".
+ *   Pegar extra — coloca a task no seu board ao lado da normal, para fazer
+ *                 depois. Continua limitado a uma extra ativa por vez.
+ *
+ * Nenhuma das duas mexe no pool das 990: as duas so sobem o contador de pessoas.
  */
 export function CompletedPage({
   session,
@@ -31,7 +37,10 @@ export function CompletedPage({
   const [hasActiveExtra, setHasActiveExtra] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [confirming, setConfirming] = useState<CompletedEntry | null>(null)
+  const [confirming, setConfirming] = useState<{
+    entry: CompletedEntry
+    action: 'take' | 'complete'
+  } | null>(null)
   const [busy, setBusy] = useState(false)
 
   const loadPage = useCallback(
@@ -78,6 +87,43 @@ export function CompletedPage({
         return
       }
       setError(err instanceof Error ? err.message : 'Não deu para pegar a task extra.')
+    } finally {
+      setConfirming(null)
+      setBusy(false)
+    }
+  }
+
+  /** Registra a conclusao na hora, com ou sem ter pegado a extra antes. */
+  async function complete(entry: CompletedEntry) {
+    setBusy(true)
+    try {
+      await completeExtraById(session.token, entry.task_id)
+      // Atualiza no lugar, como o takeExtra. Se a task era a extra ativa, ela
+      // deixa de ser — o board libera para pegar outra.
+      if (entry.extra_active) setHasActiveExtra(false)
+      setItems((prev) =>
+        prev.map((it) =>
+          it.task_id === entry.task_id
+            ? {
+                ...it,
+                done_by_me: true,
+                extra_active: false,
+                completed_count: it.completed_count + 1,
+                completions: [
+                  ...it.completions,
+                  { name: session.name, completed_at: new Date().toISOString(), extra: true },
+                ],
+              }
+            : it,
+        ),
+      )
+      setError(null)
+    } catch (err) {
+      if (isAuthError(err)) {
+        onAuthError()
+        return
+      }
+      setError(err instanceof Error ? err.message : 'Não deu para registrar a conclusão.')
     } finally {
       setConfirming(null)
       setBusy(false)
@@ -134,12 +180,12 @@ export function CompletedPage({
 
                 <TierBadge tier={entry.tier} className="shrink-0" />
 
-                <ExtraButton
+                <RowActions
                   entry={entry}
-                  everyone={everyone}
                   hasActiveExtra={hasActiveExtra}
                   busy={busy}
-                  onClick={() => setConfirming(entry)}
+                  onComplete={() => setConfirming({ entry, action: 'complete' })}
+                  onTakeExtra={() => setConfirming({ entry, action: 'take' })}
                 />
               </li>
             )
@@ -155,11 +201,20 @@ export function CompletedPage({
 
       <ConfirmDialog
         open={confirming !== null}
-        title="Pegar como task extra?"
-        message={`“${confirming?.name ?? ''}” entra no seu board ao lado da sua task normal, e não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Ela não mexe no progresso das 990 — ao concluir, você entra no contador dessa task.`}
-        confirmLabel="Pegar extra"
+        title={confirming?.action === 'take' ? 'Pegar como task extra?' : 'Registrar como feita?'}
+        message={
+          confirming?.action === 'take'
+            ? `“${confirming.entry.name}” entra no seu board ao lado da sua task normal, e não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Ela não mexe no progresso das 990 — ao concluir, você entra no contador dessa task.`
+            : `“${confirming?.entry.name ?? ''}” entra no contador dessa task em seu nome, agora. Não mexe no progresso das 990 e não tem como desfazer.`
+        }
+        confirmLabel={confirming?.action === 'take' ? 'Pegar extra' : 'Registrar'}
         busy={busy}
-        onConfirm={() => confirming && void takeExtra(confirming)}
+        onConfirm={() => {
+          if (!confirming) return
+          void (confirming.action === 'take'
+            ? takeExtra(confirming.entry)
+            : complete(confirming.entry))
+        }}
         onCancel={() => setConfirming(null)}
       />
     </main>
@@ -167,48 +222,82 @@ export function CompletedPage({
 }
 
 /**
- * Botao de pegar a extra. Cada motivo de bloqueio tem o seu texto — a RPC
+ * As duas acoes da linha. Cada motivo de bloqueio tem o seu texto — a RPC
  * recusaria de qualquer jeito, mas dizer o porque antes do clique e melhor do
  * que devolver um erro depois.
  */
-function ExtraButton({
+/*
+ * O caso "todo mundo do grupo ja fez" nao aparece aqui de proposito: se
+ * `completed_count` bateu o total de membros, eu sou um deles, entao
+ * `done_by_me` ja cobre.
+ */
+function RowActions({
   entry,
-  everyone,
   hasActiveExtra,
   busy,
-  onClick,
+  onComplete,
+  onTakeExtra,
 }: {
   entry: CompletedEntry
-  everyone: boolean
   hasActiveExtra: boolean
   busy: boolean
-  onClick: () => void
+  onComplete: () => void
+  onTakeExtra: () => void
 }) {
-  if (entry.extra_active) {
+  // Ja fiz esta task: nao ha mais nada a fazer nela.
+  if (entry.done_by_me) {
     return (
-      <span className="shrink-0 text-xs font-semibold text-accent" title="Está no seu board agora">
-        sua extra
+      <span className="shrink-0 text-xs text-muted" title="Você já fez essa task">
+        feita
       </span>
     )
   }
 
-  const blocked = entry.done_by_me
-    ? 'Você já fez essa task.'
-    : everyone
-      ? 'Todo mundo do grupo já fez essa task.'
-      : hasActiveExtra
-        ? 'Você já tem uma task extra. Conclua ou devolva ela primeiro.'
-        : null
+  // Ja esta no meu board: so falta concluir. `complete_extra_by_id` fecha
+  // justamente a extra ativa quando ela e desta task.
+  if (entry.extra_active) {
+    return (
+      <>
+        <span
+          className="shrink-0 text-xs font-semibold text-accent"
+          title="Está no seu board agora"
+        >
+          sua extra
+        </span>
+        <Button variant="ghost" className="shrink-0" disabled={busy} onClick={onComplete}>
+          Concluir
+        </Button>
+      </>
+    )
+  }
 
   return (
-    <Button
-      variant="ghost"
-      className="shrink-0"
-      disabled={blocked !== null || busy}
-      title={blocked ?? 'Repetir essa task ao lado da sua normal — sem devolver depois'}
-      onClick={onClick}
-    >
-      Pegar extra
-    </Button>
+    <>
+      {/* Registrar direto nao passa pelo estado "extra ativa", entao
+          `hasActiveExtra` nao bloqueia este botao — e o ponto da mudanca. */}
+      <Button
+        variant="ghost"
+        className="shrink-0"
+        disabled={busy}
+        title="Marcar que você já fez essa task, sem pegar de extra"
+        onClick={onComplete}
+      >
+        Completar
+      </Button>
+
+      <Button
+        variant="ghost"
+        className="shrink-0"
+        disabled={hasActiveExtra || busy}
+        title={
+          hasActiveExtra
+            ? 'Você já tem uma task extra. Conclua ou devolva ela primeiro.'
+            : 'Colocar no seu board para fazer depois — sem devolver'
+        }
+        onClick={onTakeExtra}
+      >
+        Pegar extra
+      </Button>
+    </>
   )
 }

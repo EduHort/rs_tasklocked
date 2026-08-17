@@ -82,8 +82,9 @@ export type CompletedEntry = {
   /** quantas PESSOAS do grupo ja fizeram esta task. 1 = so quem tirou do pool. */
   completed_count: number
   /**
-   * Todas as conclusoes desta task, em ordem. A primeira e sempre a que tirou a
-   * task do pool (`extra: false`); as demais sao as extras.
+   * Todas as conclusoes desta task, em ordem cronologica. A que tirou a task do
+   * pool (`extra: false`) nao e necessariamente a primeira: da para pegar de
+   * extra a task ativa de outra pessoa e concluir antes dela.
    */
   completions: Completion[]
   /** true se quem esta olhando ja fez esta task, no pool ou de extra */
@@ -121,10 +122,16 @@ export type PendingTask = {
   taken: boolean
   /** nome de quem esta com ela, ou null se estiver livre */
   holder_name: string | null
+  /** true se esta e a task extra ATIVA de quem esta olhando */
+  extra_active: boolean
+  /** true se quem esta olhando ja fez esta task de extra */
+  extra_done: boolean
 }
 
 export type PendingTaskPage = {
   total: number
+  /** true se quem olha ja esta com uma extra (so pode haver uma ativa por vez) */
+  has_active_extra: boolean
   items: PendingTask[]
 }
 

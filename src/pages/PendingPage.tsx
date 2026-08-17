@@ -4,7 +4,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog.tsx'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
 import { TaskImage } from '../components/TaskImage.tsx'
 import { TierBadge } from '../components/TierBadge.tsx'
-import { completeTaskById, isAuthError, listPending } from '../lib/api.ts'
+import { completeTaskById, isAuthError, listPending, takeExtraTask } from '../lib/api.ts'
 import { TIER_LABEL, TIERS, type PendingTask, type Session, type Tier } from '../lib/types.ts'
 
 const PAGE = 50
@@ -15,7 +15,9 @@ const PAGE = 50
  * foi feito no jogo. Nao ha gating de tier aqui: a lista mostra as 990.
  *
  * Concluir a task de OUTRA pessoa continua bloqueado (o botao fica desativado,
- * e a RPC recusaria de qualquer jeito).
+ * e a RPC recusaria de qualquer jeito) — mas da para PEGA-LA como extra e fazer
+ * junto, sem esperar aquela pessoa concluir. Task livre nunca vale de extra:
+ * seria um atalho para furar o gating de tier.
  */
 export function PendingPage({
   session,
@@ -32,7 +34,11 @@ export function PendingPage({
   const [tier, setTier] = useState<Tier | null>(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
-  const [confirming, setConfirming] = useState<PendingTask | null>(null)
+  const [hasActiveExtra, setHasActiveExtra] = useState(false)
+  const [confirming, setConfirming] = useState<{
+    task: PendingTask
+    action: 'complete' | 'take'
+  } | null>(null)
   const [busy, setBusy] = useState(false)
 
   // Descarta resposta de filtro que o usuario ja trocou (a antiga pode chegar
@@ -57,6 +63,7 @@ export function PendingPage({
         })
         if (id !== requestId.current) return
         setTotal(page.total)
+        setHasActiveExtra(page.has_active_extra)
         setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
         setNextOffset(offset + page.items.length)
         setError(null)
@@ -95,6 +102,31 @@ export function PendingPage({
         return
       }
       setError(err instanceof Error ? err.message : 'Não deu para concluir a task.')
+    } finally {
+      setConfirming(null)
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Pega a task de extra. Ela CONTINUA na lista de pendentes: o pool nao muda,
+   * quem esta com ela segue sendo o dono. So a marca da linha muda.
+   */
+  async function takeExtra(task: PendingTask) {
+    setBusy(true)
+    try {
+      await takeExtraTask(session.token, task.id)
+      setHasActiveExtra(true)
+      setItems((prev) =>
+        prev.map((t) => (t.id === task.id ? { ...t, extra_active: true } : t)),
+      )
+      setError(null)
+    } catch (err) {
+      if (isAuthError(err)) {
+        onAuthError()
+        return
+      }
+      setError(err instanceof Error ? err.message : 'Não deu para pegar a task extra.')
     } finally {
       setConfirming(null)
       setBusy(false)
@@ -156,6 +188,10 @@ export function PendingPage({
                   </p>
                   <p className="truncate text-xs text-muted">
                     {mine ? 'é a sua task ativa' : task.taken ? `com ${task.holder_name}` : 'livre'}
+                    {task.extra_active && (
+                      <span className="text-accent/75"> · sua extra</span>
+                    )}
+                    {task.extra_done && <span> · você já fez</span>}
                     {' · '}
                     <a
                       href={task.wiki_link}
@@ -170,6 +206,17 @@ export function PendingPage({
 
                 <TierBadge tier={task.tier} className="shrink-0" />
 
+                {/* Task de outra pessoa: concluir e dela, mas acompanhar de
+                    extra e permitido. Livre nao entra: viraria atalho de tier. */}
+                {lockedByOther && (
+                  <ExtraButton
+                    task={task}
+                    hasActiveExtra={hasActiveExtra}
+                    busy={busy}
+                    onClick={() => setConfirming({ task, action: 'take' })}
+                  />
+                )}
+
                 <Button
                   variant="ghost"
                   className="shrink-0"
@@ -179,7 +226,7 @@ export function PendingPage({
                       ? `${task.holder_name} está com essa task. Só quem está com ela pode concluir.`
                       : undefined
                   }
-                  onClick={() => setConfirming(task)}
+                  onClick={() => setConfirming({ task, action: 'complete' })}
                 >
                   Completar
                 </Button>
@@ -197,14 +244,65 @@ export function PendingPage({
 
       <ConfirmDialog
         open={confirming !== null}
-        title="Completar a task?"
-        message={`“${confirming?.name ?? ''}” sai do pool do grupo para sempre e vai para a lista de concluídas em seu nome.`}
-        confirmLabel="Completar"
+        title={confirming?.action === 'take' ? 'Pegar como task extra?' : 'Completar a task?'}
+        message={
+          confirming?.action === 'take'
+            ? `“${confirming.task.name}” continua sendo a task de ${confirming.task.holder_name} — ela entra no seu board como extra, para vocês fazerem em paralelo. Não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Não mexe no progresso das 990.`
+            : `“${confirming?.task.name ?? ''}” sai do pool do grupo para sempre e vai para a lista de concluídas em seu nome.`
+        }
+        confirmLabel={confirming?.action === 'take' ? 'Pegar extra' : 'Completar'}
         busy={busy}
-        onConfirm={() => confirming && void complete(confirming)}
+        onConfirm={() => {
+          if (!confirming) return
+          void (confirming.action === 'take'
+            ? takeExtra(confirming.task)
+            : complete(confirming.task))
+        }}
         onCancel={() => setConfirming(null)}
       />
     </main>
+  )
+}
+
+/**
+ * Pegar de extra a task ativa de outra pessoa. Cada bloqueio diz o porque antes
+ * do clique, em vez de deixar a RPC devolver o erro depois.
+ */
+function ExtraButton({
+  task,
+  hasActiveExtra,
+  busy,
+  onClick,
+}: {
+  task: PendingTask
+  hasActiveExtra: boolean
+  busy: boolean
+  onClick: () => void
+}) {
+  if (task.extra_active) {
+    return (
+      <span className="shrink-0 text-xs font-semibold text-accent" title="Está no seu board agora">
+        sua extra
+      </span>
+    )
+  }
+
+  const blocked = task.extra_done
+    ? 'Você já fez essa task.'
+    : hasActiveExtra
+      ? 'Você já tem uma task extra. Conclua ou devolva ela primeiro.'
+      : null
+
+  return (
+    <Button
+      variant="ghost"
+      className="shrink-0"
+      disabled={blocked !== null || busy}
+      title={blocked ?? `Fazer junto com ${task.holder_name}, como sua task extra`}
+      onClick={onClick}
+    >
+      Pegar extra
+    </Button>
   )
 }
 

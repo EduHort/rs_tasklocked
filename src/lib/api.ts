@@ -29,9 +29,10 @@ const MESSAGES: Record<string, string> = {
   ALREADY_COMPLETED: 'Essa task já foi concluída pelo grupo.',
   TASK_TAKEN: 'Essa task está ativa com outra pessoa. Só quem está com ela pode concluir.',
   NOT_COMPLETED_YET:
-    'O grupo ainda não concluiu essa task. Só dá para repetir o que já saiu do pool.',
+    'Essa task está livre. Só dá para pegar de extra o que já foi concluído ou o que está com outra pessoa.',
   EXTRA_ALREADY_ACTIVE: 'Você já tem uma task extra. Conclua ou devolva ela primeiro.',
   EXTRA_ALREADY_DONE: 'Você já fez essa task.',
+  EXTRA_OWN_TASK: 'Essa já é a sua task principal.',
   NO_EXTRA_TASK: 'Você não tem nenhuma task extra ativa.',
 }
 
@@ -133,12 +134,26 @@ export function completeTaskById(
 }
 
 /**
- * Pega como EXTRA uma task que o grupo ja concluiu — ela fica ao lado da task
- * normal e nao mexe no pool das 990. So uma extra por vez, e ninguem repete uma
- * task que ja fez.
+ * Pega como EXTRA uma task que ja tem dono no pool — seja uma que o grupo ja
+ * concluiu, seja a task ATIVA de outra pessoa (sem esperar ela concluir). Fica
+ * ao lado da task normal e nao mexe no pool das 990. So uma extra ativa por
+ * vez, ninguem repete uma task que ja fez, e task livre nunca vale.
  */
 export function takeExtraTask(token: string, taskId: string): Promise<ActiveAssignment> {
   return call<ActiveAssignment>('take_extra_task', { p_token: token, p_task_id: taskId })
+}
+
+/**
+ * Registra que voce fez uma task, sem pegar ela de extra antes — serve para o
+ * que voce concluiu de passagem. Funciona mesmo com uma extra ativa na mao: a
+ * conclusao nasce pronta, entao nao disputa o limite de uma extra por vez.
+ * Se a task JA for a sua extra ativa, conclui aquela extra.
+ */
+export function completeExtraById(
+  token: string,
+  taskId: string,
+): Promise<{ assignment_id: string }> {
+  return call('complete_extra_by_id', { p_token: token, p_task_id: taskId })
 }
 
 /**
