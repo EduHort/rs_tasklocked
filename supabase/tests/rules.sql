@@ -168,9 +168,12 @@ select t_assert('undo depois de 10min -> UNDO_EXPIRED',
 
 \echo '\n--- 9. list_pending e complete_task_by_id ---'
 -- Neste ponto: easy 100% concluida e a Ana com uma medium ativa (secao 8).
-select t_assert('total de pendentes = 990 - concluidas',
+-- O tamanho do pool sai da propria tabela: o task-list.json muda de tamanho
+-- entre as atualizacoes da lista do jogo, e o teste nao pode ter numero fixo.
+select t_assert('total de pendentes = tasks - concluidas',
   (((list_pending((select token from tk where name='Ana'))->>'total')::int =
-    990 - (select count(*) from assignments where status='completed'))::text), 'true');
+    (select count(*) from tasks) -
+    (select count(*) from assignments where status='completed'))::text), 'true');
 select t_assert('nenhuma easy sobrou nos pendentes',
   (select count(*)::text from json_array_elements(
      list_pending((select token from tk where name='Ana'), 200)->'items') e

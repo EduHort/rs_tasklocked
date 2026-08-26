@@ -104,7 +104,7 @@ create index if not exists assignments_completed_at_idx
 -- assignments — e uma extra aponta justamente para uma task que ja tem o seu.
 -- Guardar as extras a parte preserva aquele indice intacto: ele continua sendo
 -- a garantia das regras do pool, que as extras nao afetam em nada (nao mudam o
--- tier atual nem o contador de 990).
+-- tier atual nem o contador do pool).
 -- -----------------------------------------------------------------------------
 
 create table if not exists extra_assignments (
@@ -180,7 +180,7 @@ end;
 $$;
 
 -- Tier atual do grupo = menor tier_order que ainda tem task nao concluida.
--- Retorna null quando o grupo concluiu as 990 tasks.
+-- Retorna null quando o grupo concluiu todas as tasks.
 create or replace function current_tier_order()
 returns int
 language sql
@@ -315,8 +315,14 @@ begin
       ) p
     ), '[]'::json),
 
-    -- Continua sendo so o pool: as extras nao entram nas 990.
-    'completed_total', (select count(*)::int from assignments where status = 'completed')
+    -- Continua sendo so o pool: as extras nao entram no total.
+    'completed_total', (select count(*)::int from assignments where status = 'completed'),
+
+    -- Denominador do progresso do grupo. Vem do banco de proposito, e nao de um
+    -- numero fixo no front: o task-list.json muda de tamanho a cada atualizacao
+    -- da lista do jogo, e um `npm run seed` novo ja deixa este valor correto
+    -- sem tocar em codigo.
+    'task_total', (select count(*)::int from tasks)
   );
 end;
 $$;
@@ -482,6 +488,9 @@ declare
 begin
   return json_build_object(
     'total', (select count(*)::int from assignments where status = 'completed'),
+
+    -- Mesmo denominador do get_state: quantas tasks o pool tem hoje.
+    'task_total', (select count(*)::int from tasks),
 
     'member_total', (select count(*)::int from members),
 
@@ -711,7 +720,7 @@ $$;
 -- Um membro escolhe uma task que JA TEM DONO no pool — concluida pelo grupo, ou
 -- ativa com outra pessoa — e a pega como "extra", ao lado da task normal. A
 -- extra nao mexe no pool: nao entra em `assignments`, nao muda o tier atual,
--- nao muda o contador de 990. Ela so incrementa o contador de PESSOAS por task
+-- nao muda o contador do pool. Ela so incrementa o contador de PESSOAS por task
 -- que a /completed mostra.
 --
 -- Regras:
@@ -807,7 +816,7 @@ $$;
 -- complete_extra_task: conclui a extra ativa do dono do token.
 --
 -- Nao mexe em `assignments`: a task ja estava concluida pelo grupo e continua
--- contando UMA vez nas 990. O efeito visivel e o contador de pessoas na
+-- contando UMA vez no pool. O efeito visivel e o contador de pessoas na
 -- /completed subir de n para n+1.
 -- -----------------------------------------------------------------------------
 create or replace function complete_extra_task(p_token uuid)

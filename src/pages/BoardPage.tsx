@@ -91,7 +91,7 @@ export function BoardPage({
 
       {state && (
         <p className="text-xs text-muted">
-          {state.completed_total} de 990 tasks concluídas pelo grupo.
+          {state.completed_total} de {state.task_total} tasks concluídas pelo grupo.
         </p>
       )}
     </main>

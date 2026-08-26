@@ -87,7 +87,7 @@ export function MyTaskCard({
                 Você não tem task ativa. Gere a sua para começar.
               </>
             ) : (
-              <>O grupo concluiu todas as 990 tasks. Acabou.</>
+              <>O grupo concluiu todas as tasks. Acabou.</>
             )}
           </p>
           <Button onClick={onRoll} loading={busy} disabled={!currentTier}>

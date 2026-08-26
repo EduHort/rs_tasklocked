@@ -6,7 +6,7 @@
  *   npm run verify -- --yes-destructive
  *
  * ATENCAO: apaga membros e assignments. Rode antes da run comecar pra valer,
- * ou num projeto Supabase separado. As 990 tasks nao sao tocadas.
+ * ou num projeto Supabase separado. A tabela `tasks` nao e tocada.
  */
 import { adminClient, anonClient } from './_env.ts'
 import type { GroupState, PendingTaskPage, Task } from '../src/lib/types.ts'
@@ -201,9 +201,15 @@ const pendingArgs = { p_token: t1, p_limit: 200, p_offset: 0 }
 const listPending = (extra: Record<string, unknown> = {}) =>
   rpc<PendingTaskPage>('list_pending', { ...pendingArgs, ...extra })
 
-const doneSoFar = (await state(t1)).completed_total
+// O tamanho do pool vem do proprio get_state: o task-list.json muda de tamanho
+// entre as atualizacoes da lista do jogo, e o teste nao pode ter o numero fixo.
+const { completed_total: doneSoFar, task_total: poolSize } = await state(t1)
 const pending = await listPending()
-check('total de pendentes = 990 - concluidas', pending.total === 990 - doneSoFar, `${pending.total}`)
+check(
+  `total de pendentes = ${poolSize} - concluidas`,
+  pending.total === poolSize - doneSoFar,
+  `${pending.total}`,
+)
 check('nenhuma easy sobrou na lista', pending.items.every((i) => i.tier !== 'easy'))
 
 // A ativa do p1 e uma medium sorteada acima. Busca pelo nome dela em vez de

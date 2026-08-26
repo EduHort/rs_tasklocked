@@ -34,7 +34,7 @@ export type Member = {
   active: ActiveAssignment | null
   /**
    * Task EXTRA: uma que o grupo JA concluiu e o membro escolheu repetir.
-   * Fica ao lado da `active` e nao mexe no pool das 990. null quando nao ha.
+   * Fica ao lado da `active` e nao mexe no pool. null quando nao ha.
    */
   extra: ActiveAssignment | null
 }
@@ -51,10 +51,16 @@ export type GroupState = {
   /** id do membro dono do token — quem esta olhando a tela */
   me: string
   members: Member[]
-  /** null quando o grupo concluiu as 990 tasks */
+  /** null quando o grupo concluiu todas as tasks do pool */
   current_tier: Tier | null
   progress: TierProgress[]
   completed_total: number
+  /**
+   * Tamanho do pool hoje — o denominador de "X de Y". Vem do banco em vez de
+   * ser fixo no codigo: o task-list.json muda de tamanho quando a lista do jogo
+   * e atualizada, e o `npm run seed` sozinho ja acerta a tela.
+   */
+  task_total: number
 }
 
 /** Uma pessoa que fez uma task — seja tirando-a do pool, seja repetindo de extra. */
@@ -96,6 +102,8 @@ export type CompletedEntry = {
 export type CompletedPage = {
   /** quantas tasks sairam do pool — as extras nao entram aqui */
   total: number
+  /** tamanho do pool hoje — o mesmo `task_total` do `GroupState` */
+  task_total: number
   /** denominador do contador: quantos membros o grupo tem */
   member_total: number
   /** true se quem olha ja esta com uma extra (so pode haver uma por vez) */

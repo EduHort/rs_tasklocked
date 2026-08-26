@@ -10,9 +10,11 @@ Cada um sorteia **a sua própria** task do pool compartilhado, faz no jogo e mar
    são permitidas: o dataset tem 161 pares repetidos e eles são tasks distintas e progressivas.
 3. Task concluída sai do pool do grupo para sempre.
 4. Tiers são sequenciais **no sorteio**: as 179 `easy` precisam estar todas concluídas antes de
-   qualquer `medium`, e assim por diante — 990 tasks no total.
+   qualquer `medium`, e assim por diante. O tamanho do pool é o do
+   [task-list.json](task-list.json) — hoje 997 tasks — e o app lê esse total do banco, então
+   atualizar a lista não exige mexer em código (ver [Atualizar a lista](#atualizar-a-lista-de-tasks)).
 5. Além da sua task do pool, cada um pode pegar **uma task extra**: uma que o grupo já concluiu,
-   escolhida em `/completed`, para repetir. A extra não mexe nas 990 (ver
+   escolhida em `/completed`, para repetir. A extra não mexe no pool (ver
    [Tasks extra](#tasks-extra)).
 
 **Telas:** `/board` (sua task + a extra + a do grupo) · `/completed` (o que já saiu, com o contador
@@ -57,8 +59,8 @@ inválido. O front nunca decide qual task cai para quem.
 ### Tasks extra
 
 Uma **extra** é uma task que o grupo já concluiu e alguém escolheu repetir. Ela fica no board ao
-lado da task normal e **não mexe no pool**: não muda o tier atual, não muda o contador de 990 e não
-tira nada da lista de pendentes.
+lado da task normal e **não mexe no pool**: não muda o tier atual, não muda o contador do grupo e
+não tira nada da lista de pendentes.
 
 O efeito aparece em `/completed`: cada linha traz o contador `n/total de membros` e **uma entrada
 por pessoa que fez a task**, com nome e data — quem a tirou do pool primeiro, depois quem a repetiu
@@ -123,12 +125,19 @@ o `.env.local` está no `.gitignore`.
 ### 2. Aplicar o schema
 
 Copie o conteúdo de [supabase/schema.sql](supabase/schema.sql) e rode no **SQL Editor** do Supabase.
-O arquivo é idempotente: pode rodar de novo sem perder dados.
+O arquivo é idempotente: pode rodar de novo sem perder dados — inclusive num banco que já está no ar,
+que é o caminho mais simples para pegar as mudanças abaixo.
+
+Quem prefere aplicar só o que mudou tem as migrações aditivas, na ordem:
+[migration-extra-tasks.sql](supabase/migration-extra-tasks.sql) →
+[migration-completions-detail.sql](supabase/migration-completions-detail.sql) →
+[migration-task-total.sql](supabase/migration-task-total.sql). Elas só trocam funções por
+`create or replace`; nenhuma toca em dado.
 
 ### 3. Popular as tasks e definir o código do grupo
 
 ```bash
-npm run seed        # carrega as 990 tasks do task-list.json
+npm run seed        # carrega as tasks do task-list.json
 npm run set-code    # gera um código de 6 caracteres e imprime UMA vez
 ```
 
@@ -146,11 +155,40 @@ npm run dev
 ## Começar uma run nova
 
 ```bash
-npm run reset -- --yes    # apaga membros, progresso e extras; mantém as 990 tasks e o código
+npm run reset -- --yes    # apaga membros, progresso e extras; mantém as tasks e o código
 npm run set-code          # opcional: gera um código novo
 ```
 
 O schema e o seed continuam de pé — é só o grupo entrar de novo.
+
+---
+
+## Atualizar a lista de tasks
+
+Quando o jogo ganha tasks novas, troque o [task-list.json](task-list.json) e rode o seed de novo,
+**com a run em andamento**:
+
+```bash
+npm run seed
+```
+
+**O progresso não se perde.** O seed faz `upsert` por `id` só na tabela `tasks` — nunca toca em
+`assignments` nem em `extra_assignments`. Quem já existe tem os campos atualizados no lugar, quem é
+novo entra como pendente, e tudo o que o grupo concluiu continua concluído.
+
+O que vale conferir antes:
+
+- **Task nova em tier já fechado** volta o tier atual para trás — `current_tier_order()` é o menor
+  tier com task não concluída, então uma `hard` nova reabre o `hard` mesmo com o grupo no `elite`.
+  É o gating funcionando, não um bug.
+- **Task que muda de tier** mantém a conclusão; ela só passa a contar na outra barra de progresso.
+- **Mesmo `id` com nome novo** atualiza o texto em todas as telas, inclusive na lista de concluídas.
+- **`id` que some do JSON não é apagado** — o seed nunca deleta. A task fica no pool para sempre. Se
+  precisar tirar, é `delete` manual no Supabase, e antes dele o assignment daquela task (a FK
+  `assignments.task_id` segura).
+
+O total ("X de Y tasks concluídas") vem do banco, via `task_total` no `get_state` e no
+`list_completed`, então não há número para ajustar no código.
 
 ---
 
@@ -192,8 +230,8 @@ quando as easy restantes já estão todas ativas, a virada para medium exatament
 pendentes com filtro e busca, a conclusão manual (`TASK_TAKEN` / `ALREADY_COMPLETED`) e o bloqueio da
 RLS para a anon key.
 
-⚠️ Ele **apaga membros, assignments e tasks extra** — rode antes da run começar pra valer. As 990
-tasks não são tocadas.
+⚠️ Ele **apaga membros, assignments e tasks extra** — rode antes da run começar pra valer. A tabela
+`tasks` não é tocada.
 
 Há também uma suíte que roda direto no Postgres, sem precisar do Supabase — útil para mexer no
 schema ([supabase/tests/](supabase/tests/)):

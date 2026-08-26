@@ -12,7 +12,7 @@ const PAGE = 50
 /**
  * Todas as tasks que o grupo ainda nao concluiu, com um botao para marcar cada
  * uma como feita sem precisar sortea-la antes — util para registrar o que ja
- * foi feito no jogo. Nao ha gating de tier aqui: a lista mostra as 990.
+ * foi feito no jogo. Nao ha gating de tier aqui: a lista mostra o pool inteiro.
  *
  * Concluir a task de OUTRA pessoa continua bloqueado (o botao fica desativado,
  * e a RPC recusaria de qualquer jeito) — mas da para PEGA-LA como extra e fazer
@@ -170,7 +170,7 @@ export function PendingPage({
             ? 'carregando…'
             : query || tier
               ? 'Nenhuma task pendente com esse filtro.'
-              : 'O grupo concluiu todas as 990 tasks. Acabou.'}
+              : 'O grupo concluiu todas as tasks. Acabou.'}
         </p>
       ) : (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface">
@@ -247,7 +247,7 @@ export function PendingPage({
         title={confirming?.action === 'take' ? 'Pegar como task extra?' : 'Completar a task?'}
         message={
           confirming?.action === 'take'
-            ? `“${confirming.task.name}” continua sendo a task de ${confirming.task.holder_name} — ela entra no seu board como extra, para vocês fazerem em paralelo. Não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Não mexe no progresso das 990.`
+            ? `“${confirming.task.name}” continua sendo a task de ${confirming.task.holder_name} — ela entra no seu board como extra, para vocês fazerem em paralelo. Não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Não mexe no progresso do grupo.`
             : `“${confirming?.task.name ?? ''}” sai do pool do grupo para sempre e vai para a lista de concluídas em seu nome.`
         }
         confirmLabel={confirming?.action === 'take' ? 'Pegar extra' : 'Completar'}

@@ -22,7 +22,7 @@ const MESSAGES: Record<string, string> = {
   NO_ACTIVE_TASK: 'Você não tem nenhuma task ativa.',
   TIER_LOCKED:
     'As tasks que sobraram deste tier já estão com outras pessoas. Espere alguém concluir.',
-  ALL_DONE: 'Acabou: o grupo concluiu todas as 990 tasks.',
+  ALL_DONE: 'Acabou: o grupo concluiu todas as tasks.',
   UNDO_EXPIRED: 'Só dá para desfazer até 10 minutos depois de concluir.',
   NOT_INITIALIZED: 'O grupo ainda não foi configurado. Rode `npm run set-code`.',
   TASK_NOT_FOUND: 'Essa task não existe mais. Recarregue a página.',
@@ -136,8 +136,8 @@ export function completeTaskById(
 /**
  * Pega como EXTRA uma task que ja tem dono no pool — seja uma que o grupo ja
  * concluiu, seja a task ATIVA de outra pessoa (sem esperar ela concluir). Fica
- * ao lado da task normal e nao mexe no pool das 990. So uma extra ativa por
- * vez, ninguem repete uma task que ja fez, e task livre nunca vale.
+ * ao lado da task normal e nao mexe no pool. So uma extra ativa por vez,
+ * ninguem repete uma task que ja fez, e task livre nunca vale.
  */
 export function takeExtraTask(token: string, taskId: string): Promise<ActiveAssignment> {
   return call<ActiveAssignment>('take_extra_task', { p_token: token, p_task_id: taskId })

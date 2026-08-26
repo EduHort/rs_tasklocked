@@ -11,7 +11,7 @@ import { TierBadge } from './TierBadge.tsx'
  * escolheu repetir, em /completed. Fica ao lado da task normal.
  *
  * Visualmente secundaria de proposito — a task do pool e que faz o grupo
- * avancar; a extra nao mexe nas 990. Some quando nao ha extra ativa: quem pega
+ * avancar; a extra nao mexe no pool. Some quando nao ha extra ativa: quem pega
  * uma escolhe na tela de concluidas, entao nao ha botao "gerar" aqui.
  *
  * Concluir e a UNICA saida: nao ha como devolver. Como so cabe uma extra por
@@ -33,7 +33,7 @@ export function ExtraTaskCard({
     <section className="rounded-xl border border-border bg-surface p-4">
       <header className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-sm font-bold uppercase tracking-widest text-muted">Sua task extra</h2>
-        <span className="text-xs text-muted">não conta para as 990</span>
+        <span className="text-xs text-muted">não conta para o progresso do grupo</span>
       </header>
 
       <div className="flex flex-col gap-4 sm:flex-row">

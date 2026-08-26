@@ -22,7 +22,7 @@ const PAGE = 50
  *   Pegar extra — coloca a task no seu board ao lado da normal, para fazer
  *                 depois. Continua limitado a uma extra ativa por vez.
  *
- * Nenhuma das duas mexe no pool das 990: as duas so sobem o contador de pessoas.
+ * Nenhuma das duas mexe no pool: as duas so sobem o contador de pessoas.
  */
 export function CompletedPage({
   session,
@@ -33,6 +33,7 @@ export function CompletedPage({
 }) {
   const [items, setItems] = useState<CompletedEntry[]>([])
   const [total, setTotal] = useState(0)
+  const [taskTotal, setTaskTotal] = useState(0)
   const [memberTotal, setMemberTotal] = useState(0)
   const [hasActiveExtra, setHasActiveExtra] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -49,6 +50,7 @@ export function CompletedPage({
       try {
         const page = await listCompleted(session.token, PAGE, offset)
         setTotal(page.total)
+        setTaskTotal(page.task_total)
         setMemberTotal(page.member_total)
         setHasActiveExtra(page.has_active_extra)
         setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
@@ -136,7 +138,9 @@ export function CompletedPage({
         <h1 className="text-sm font-bold uppercase tracking-widest text-muted">
           Tasks concluídas
         </h1>
-        <span className="text-sm text-muted">{total} de 990</span>
+        <span className="text-sm text-muted">
+          {total} de {taskTotal}
+        </span>
       </header>
 
       {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
@@ -204,8 +208,8 @@ export function CompletedPage({
         title={confirming?.action === 'take' ? 'Pegar como task extra?' : 'Registrar como feita?'}
         message={
           confirming?.action === 'take'
-            ? `“${confirming.entry.name}” entra no seu board ao lado da sua task normal, e não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Ela não mexe no progresso das 990 — ao concluir, você entra no contador dessa task.`
-            : `“${confirming?.entry.name ?? ''}” entra no contador dessa task em seu nome, agora. Não mexe no progresso das 990 e não tem como desfazer.`
+            ? `“${confirming.entry.name}” entra no seu board ao lado da sua task normal, e não dá para devolver: concluir é a única saída, e você só pode ter uma extra por vez. Ela não mexe no progresso do grupo — ao concluir, você entra no contador dessa task.`
+            : `“${confirming?.entry.name ?? ''}” entra no contador dessa task em seu nome, agora. Não mexe no progresso do grupo e não tem como desfazer.`
         }
         confirmLabel={confirming?.action === 'take' ? 'Pegar extra' : 'Registrar'}
         busy={busy}

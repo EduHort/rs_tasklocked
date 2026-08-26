@@ -76,10 +76,16 @@ select t_assert('task ainda no pool -> NOT_COMPLETED_YET',
                                  (select livre from fx))$$),
   'NOT_COMPLETED_YET');
 
-select t_assert('task ATIVA com alguem -> NOT_COMPLETED_YET',
+-- A task ATIVA de OUTRA pessoa vale como extra: da para acompanhar alguem sem
+-- esperar ela concluir. Devolve em seguida para nao gastar o slot de extra
+-- ativa da Ana, que as secoes seguintes usam.
+select t_assert('task ATIVA de outro -> aceita como extra',
   t_try($$select take_extra_task((select token from tk where name='Ana'),
                                  (select edu_active from fx))$$),
-  'NOT_COMPLETED_YET');
+  'OK');
+select t_assert('e devolve-la libera o slot de novo',
+  t_try($$select abandon_extra_task((select token from tk where name='Ana'))$$),
+  'OK');
 
 select t_assert('quem tirou do pool nao repete -> EXTRA_ALREADY_DONE',
   t_try($$select take_extra_task((select token from tk where name='Edu'),
@@ -247,7 +253,7 @@ select t_assert('contador chega a 3 (todo o grupo fez)',
    where (x->>'task_id')::uuid = (select edu_task from fx)),
   '3');
 
-select t_assert('as 990 continuam intocadas: total do grupo ainda 3',
+select t_assert('o pool continua intocado: total do grupo ainda 3',
   (list_completed((select token from tk where name='Ana'))->>'total'), '3');
 
 select t_assert('a lista continua com 1 linha por task (extra nao vira linha)',

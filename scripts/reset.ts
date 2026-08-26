@@ -4,7 +4,7 @@
  *   npm run reset -- --yes
  *
  * Apaga: membros, assignments (tasks ativas e concluídas) e as tasks extra.
- * Mantém: as 990 tasks e o código do grupo — schema e seed continuam de pé.
+ * Mantém: a tabela `tasks` e o código do grupo — schema e seed continuam de pé.
  *
  * Para trocar o código depois: npm run set-code
  */
@@ -13,7 +13,7 @@ import { adminClient } from './_env.ts'
 if (!process.argv.includes('--yes')) {
   console.error(`
   Isto apaga TODOS os membros e TODO o progresso do grupo
-  (tasks ativas e a lista de concluídas). As 990 tasks ficam.
+  (tasks ativas e a lista de concluídas). A tabela de tasks fica.
 
   Se for isso mesmo:  npm run reset -- --yes
 `)

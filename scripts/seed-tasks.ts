@@ -1,6 +1,14 @@
 /**
- * Carrega as 990 tasks do task-list.json para a tabela `tasks`.
- * Idempotente: usa upsert por id, entao rodar de novo nao duplica.
+ * Carrega as tasks do task-list.json para a tabela `tasks`.
+ *
+ * Idempotente: usa upsert por id, entao rodar de novo nao duplica — e e assim
+ * que se atualiza a lista quando o jogo ganha tasks novas. Quem ja existe tem
+ * os campos atualizados no lugar, quem e novo entra. Nada em `assignments` ou
+ * `extra_assignments` e tocado: o que o grupo ja concluiu continua concluido.
+ *
+ * Nao apaga: um id que sumir do JSON continua no banco (e no pool). Se isso
+ * acontecer, o delete e manual — e antes dele o assignment daquela task, se
+ * houver, por causa da FK.
  *
  *   npm run seed
  */
