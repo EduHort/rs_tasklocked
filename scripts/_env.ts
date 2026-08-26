@@ -4,7 +4,7 @@ import { config } from 'dotenv'
 config({ path: '.env.local' })
 config({ path: '.env' })
 
-function required(name: string): string {
+export function required(name: string): string {
   const value = process.env[name]
   if (!value) {
     console.error(`\nFalta a variavel ${name}. Copie .env.example para .env.local e preencha.\n`)

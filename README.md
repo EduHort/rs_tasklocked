@@ -93,13 +93,10 @@ ficar preso numa extra inviável, rodar isso no SQL Editor com o token da pessoa
 destrava (e aquela task volta a ficar disponível como extra para ela). Nenhuma tela chama essa
 função, e não há wrapper dela em [src/lib/api.ts](src/lib/api.ts).
 
-> **Migrações:** o banco que já está no ar sobe com dois arquivos, nesta ordem —
-> [migration-extra-tasks.sql](supabase/migration-extra-tasks.sql) (cria a tabela, os índices e as
-> funções) e [migration-completions-detail.sql](supabase/migration-completions-detail.sql) (troca
-> `list_completed` pela versão com `completions`). Os dois são idempotentes e não apagam dado
-> nenhum. Rode o SQL **antes** de publicar o front — o front antigo ignora os campos novos e
-> continua funcionando no intervalo. Quem estiver montando do zero não precisa de nenhum dos dois:
-> o `schema.sql` já inclui tudo.
+> **Não há arquivos de migração:** o `schema.sql` é aplicado por cima do banco em produção, e isso
+> basta (ver [Aplicar o schema](#2-aplicar-o-schema)). Vale a ordem de sempre ao mudar as duas
+> pontas: **SQL antes, front depois** — o front antigo ignora campos novos e continua funcionando no
+> intervalo, enquanto o contrário quebra a tela.
 
 > **Por que polling e não Realtime:** o Postgres Changes do Supabase respeita RLS, e como nenhuma
 > policy libera SELECT, ele não entregaria nada. O board faz polling de `get_state` a cada 3s (e
@@ -124,15 +121,31 @@ o `.env.local` está no `.gitignore`.
 
 ### 2. Aplicar o schema
 
-Copie o conteúdo de [supabase/schema.sql](supabase/schema.sql) e rode no **SQL Editor** do Supabase.
-O arquivo é idempotente: pode rodar de novo sem perder dados — inclusive num banco que já está no ar,
-que é o caminho mais simples para pegar as mudanças abaixo.
+```bash
+npm run schema
+```
 
-Quem prefere aplicar só o que mudou tem as migrações aditivas, na ordem:
-[migration-extra-tasks.sql](supabase/migration-extra-tasks.sql) →
-[migration-completions-detail.sql](supabase/migration-completions-detail.sql) →
-[migration-task-total.sql](supabase/migration-task-total.sql). Elas só trocam funções por
-`create or replace`; nenhuma toca em dado.
+Precisa da `SUPABASE_DB_URL` no `.env.local`. Use a string do **Session pooler** (Project Settings →
+Database → Connection string) — a "Direct connection" é IPv6-only desde que o Supabase tirou o IPv4
+do free tier, e o "Transaction pooler" (porta 6543) não aceita DDL. O [.env.example](.env.example)
+tem o formato exato.
+
+Sem essa variável, o caminho manual continua valendo: copie o
+[supabase/schema.sql](supabase/schema.sql) e cole no **SQL Editor** do Supabase.
+
+**Mudou o schema? Roda o schema de novo.** Este projeto não cria um arquivo de migração por
+alteração. O `schema.sql` é a fonte da verdade e é idempotente de ponta a ponta — só
+`create table if not exists`, `create index if not exists` e `create or replace function`, sem um
+`delete` ou `truncate` no arquivo inteiro. Rodar por cima de um banco em produção preserva tasks,
+membros, assignments, extras, tokens e o código do grupo; só as funções são trocadas.
+
+Não existem arquivos de migração no repositório de propósito. Eles congelam uma cópia das funções
+que envelhece: as três que existiam foram apagadas justamente porque, rodadas hoje, **desfariam**
+mudanças já aplicadas. O histórico delas continua no git, que é o lugar certo para isso.
+
+A exceção que justificaria um arquivo separado é uma mudança que mexa em *dado* (backfill de coluna,
+constraint nova sobre linhas existentes) — nenhuma precisou até hoje. Nesse caso, o arquivo cobre só
+o passo de dados, e o `schema.sql` continua cuidando da estrutura.
 
 ### 3. Popular as tasks e definir o código do grupo
 
@@ -240,7 +253,7 @@ schema ([supabase/tests/](supabase/tests/)):
 docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=tasklocked -p 55432:5432 postgres:16-alpine
 psql ... -f supabase/schema.sql
 psql ... -f supabase/tests/rules.sql        # 48 asserções sequenciais
-psql ... -f supabase/tests/extra-tasks.sql  # 45 asserções das tasks extra
+psql ... -f supabase/tests/extra-tasks.sql  # 46 asserções das tasks extra
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool
 ```
 
@@ -269,10 +282,9 @@ src/
   components/   MyTaskCard · ExtraTaskCard · MemberCard (read-only) · ConfirmDialog · …
   pages/        LoginPage · BoardPage · CompletedPage · PendingPage
 supabase/
-  schema.sql    tabelas, índices, RLS e as funções — fonte da verdade
-  migration-*.sql             só para quem já tem o banco no ar (aditivas)
+  schema.sql    tabelas, índices, RLS e as funções — fonte da verdade, idempotente
   tests/        suítes SQL + teste de concorrência
-scripts/        seed-tasks · set-code · verify-rules
+scripts/        apply-schema · seed-tasks · set-code · reset · verify-rules
 public/         _redirects · robots.txt · favicon.ico · apple-touch-icon.png · og.png
 ```
 

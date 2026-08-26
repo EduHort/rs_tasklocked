@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc",
+    "schema": "tsx scripts/apply-schema.ts",
     "seed": "tsx scripts/seed-tasks.ts",
     "set-code": "tsx scripts/set-code.ts",
     "reset": "tsx scripts/reset.ts",
