@@ -49,6 +49,12 @@ create table if not exists group_state (
   created_at  timestamptz not null default now()
 );
 
+-- Segredo do worker que sincroniza a lista de tasks com o upstream (ver
+-- `sync_tasks` la embaixo). Fica aqui, e nao numa tabela nova, porque e a mesma
+-- natureza do `code_hash`: uma senha do grupo, guardada so como hash bcrypt.
+-- Nulo = a sincronizacao automatica nao foi configurada, e `sync_tasks` recusa.
+alter table group_state add column if not exists sync_secret_hash text;
+
 create table if not exists members (
   id           uuid primary key default gen_random_uuid(),
   name         text not null,
@@ -963,16 +969,181 @@ begin
 end;
 $$;
 
+-- =============================================================================
+-- Sincronizacao automatica da lista de tasks
+--
+-- Um Cron Trigger do Cloudflare Workers busca o task-list.json do upstream
+-- (github.com/OSRS-Taskman/collection-log-master) uma vez por dia e manda a
+-- lista inteira para `sync_tasks`. E o mesmo efeito do `npm run seed`, so que
+-- sem ninguem no teclado.
+--
+-- Por que uma RPC com segredo proprio, e nao a service_role key no worker:
+-- a service_role ignora a RLS, entao um worker comprometido leria a tabela
+-- `members` e viraria qualquer pessoa do grupo. Este segredo so consegue fazer
+-- upsert em `tasks` — nao le membros, nao toca em assignments, nao conclui
+-- nada. E o mesmo raciocinio do resto da API: cada credencial faz uma coisa so.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- set_sync_secret: define/troca o segredo do worker. Como o set_group_code,
+-- e usada so por script local com a service_role key e NUNCA vai para o anon.
+-- -----------------------------------------------------------------------------
+create or replace function set_sync_secret(p_secret text)
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+begin
+  if p_secret is null or length(trim(p_secret)) < 16 then
+    raise exception 'WEAK_SYNC_SECRET';
+  end if;
+
+  update group_state
+  set sync_secret_hash = crypt(p_secret, gen_salt('bf'))
+  where id = true;
+
+  -- Sem linha em group_state o update acima nao faz nada e o worker ficaria
+  -- recebendo SYNC_NOT_CONFIGURED sem explicacao. Melhor falar agora.
+  if not found then
+    raise exception 'NOT_INITIALIZED';
+  end if;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- sync_tasks: upsert da lista inteira, por id. E o `npm run seed` em SQL.
+--
+-- Recebe um array ja achatado, com `tier` e `tier_order` resolvidos pelo worker
+-- — a mesma forma que o seed-tasks.ts monta. Devolve o que mudou, para o worker
+-- registrar no log (e nao ficar invisivel o que rodou de madrugada).
+--
+-- Nao apaga nada: id que sumiu do upstream continua no pool, exatamente como no
+-- seed manual. Tirar uma task do ar e decisao humana, nao de cron.
+-- -----------------------------------------------------------------------------
+create or replace function sync_tasks(p_secret text, p_tasks jsonb)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_hash     text;
+  v_incoming int;
+  v_current  int;
+  v_dupes    int;
+  v_inserted int;
+  v_updated  int;
+begin
+  select sync_secret_hash into v_hash from group_state where id = true;
+
+  if not found or v_hash is null then
+    raise exception 'SYNC_NOT_CONFIGURED';
+  end if;
+
+  if p_secret is null or v_hash <> crypt(p_secret, v_hash) then
+    raise exception 'INVALID_SYNC_SECRET';
+  end if;
+
+  if p_tasks is null or jsonb_typeof(p_tasks) <> 'array' then
+    raise exception 'SYNC_BAD_PAYLOAD';
+  end if;
+
+  select count(*) into v_incoming from jsonb_array_elements(p_tasks);
+  select count(*) into v_current  from tasks;
+
+  -- Guarda: a lista do upstream so cresce. Se veio menor, e commit ruim la em
+  -- cima ou download truncado — para tudo e deixa um humano olhar. Sem isto, um
+  -- JSON pela metade nao apagaria nada (o upsert nunca deleta), mas passaria
+  -- despercebido no log como se fosse um dia normal.
+  if v_incoming < v_current then
+    raise exception 'SYNC_SHRANK: upstream=% banco=%', v_incoming, v_current;
+  end if;
+
+  -- Id repetido faz o upsert morrer com "ON CONFLICT DO UPDATE command cannot
+  -- affect row a second time" — que nao diz nada para quem le o log do cron as
+  -- 6 da manha. Melhor falhar aqui, dizendo o que houve.
+  select count(*) into v_dupes
+  from (
+    select t->>'id' as id
+    from jsonb_array_elements(p_tasks) t
+    group by 1 having count(*) > 1
+  ) d;
+
+  if v_dupes > 0 then
+    raise exception 'SYNC_DUPLICATE_IDS: % id(s) repetidos no upstream', v_dupes;
+  end if;
+
+  with incoming as (
+    select
+      (t->>'id')::uuid             as id,
+      t->>'tier'                   as tier,
+      (t->>'tier_order')::int      as tier_order,
+      t->>'name'                   as name,
+      t->>'short_name'             as short_name,
+      t->>'tip'                    as tip,
+      t->>'wiki_link'              as wiki_link,
+      t->>'image_link'             as image_link,
+      (t->>'display_item_id')::int as display_item_id,
+      -- `->` devolve o jsonb 'null' quando a chave existe com valor nulo, e SQL
+      -- NULL quando ela nao existe. Os dois tem que virar NULL na coluna.
+      nullif(t->'verification', 'null'::jsonb) as verification,
+      case when jsonb_typeof(t->'tags') = 'array'
+           then array(select jsonb_array_elements_text(t->'tags'))
+           else null end          as tags
+    from jsonb_array_elements(p_tasks) t
+  ),
+  upserted as (
+    insert into tasks (id, tier, tier_order, name, short_name, tip, wiki_link,
+                       image_link, display_item_id, verification, tags)
+    select id, tier, tier_order, name, short_name, tip, wiki_link,
+           image_link, display_item_id, verification, tags
+    from incoming
+    on conflict (id) do update set
+      tier            = excluded.tier,
+      tier_order      = excluded.tier_order,
+      name            = excluded.name,
+      short_name      = excluded.short_name,
+      tip             = excluded.tip,
+      wiki_link       = excluded.wiki_link,
+      image_link      = excluded.image_link,
+      display_item_id = excluded.display_item_id,
+      verification    = excluded.verification,
+      tags            = excluded.tags
+    -- xmax = 0 identifica a linha que acabou de nascer; qualquer outro valor
+    -- veio do caminho do `do update`.
+    returning (xmax = 0) as inserted
+  )
+  select count(*) filter (where inserted)::int,
+         count(*) filter (where not inserted)::int
+    into v_inserted, v_updated
+  from upserted;
+
+  return json_build_object(
+    'inserted', v_inserted,
+    'updated',  v_updated,
+    'total',    (select count(*)::int from tasks)
+  );
+end;
+$$;
+
 -- -----------------------------------------------------------------------------
 -- Permissoes: o anon so pode executar as RPCs publicas.
--- auth_member, current_tier_order e set_group_code sao internas
--- (nao expostas ao PostgREST para o anon).
+-- auth_member, current_tier_order, set_group_code e set_sync_secret sao
+-- internas (nao expostas ao PostgREST para o anon).
+--
+-- `sync_tasks` e a excecao que confirma a regra: ela E concedida ao anon, mas
+-- so anda com o segredo do worker, que nao esta no bundle do site.
 -- -----------------------------------------------------------------------------
 
 revoke all on function auth_member(uuid)      from anon, authenticated, public;
 revoke all on function current_tier_order()   from anon, authenticated, public;
 revoke all on function set_group_code(text)   from anon, authenticated, public;
-grant execute on function set_group_code(text) to service_role;
+revoke all on function set_sync_secret(text)  from anon, authenticated, public;
+grant execute on function set_group_code(text)  to service_role;
+grant execute on function set_sync_secret(text) to service_role;
+
+grant execute on function sync_tasks(text, jsonb) to anon, authenticated;
 
 grant execute on function join_group(text, text)          to anon, authenticated;
 grant execute on function get_state(uuid)                 to anon, authenticated;
@@ -992,7 +1163,7 @@ notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 15 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 17 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
@@ -1013,5 +1184,6 @@ select
                            'auth_member','current_tier_order',
                            'take_extra_task','complete_extra_task',
                            'complete_extra_by_id',
-                           'abandon_extra_task'))                        as funcoes,
+                           'abandon_extra_task',
+                           'set_sync_secret','sync_tasks'))              as funcoes,
   (select count(*) from tasks)                                           as tasks_carregadas;

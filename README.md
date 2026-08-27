@@ -178,8 +178,15 @@ O schema e o seed continuam de pé — é só o grupo entrar de novo.
 
 ## Atualizar a lista de tasks
 
-Quando o jogo ganha tasks novas, troque o [task-list.json](task-list.json) e rode o seed de novo,
-**com a run em andamento**:
+Há duas formas, e as duas fazem exatamente a mesma coisa no banco: um `upsert` por `id` na tabela
+`tasks`. A automática é a que roda no dia a dia; a manual continua valendo e é o plano B.
+
+**Automática** — um Worker do Cloudflare busca o
+[task-list.json do upstream](https://github.com/OSRS-Taskman/collection-log-master/blob/main/src/main/resources/com/collectionlogmaster/task-list.json)
+todo dia e aplica sozinho. Ver [Sincronização automática](#sincronização-automática).
+
+**Manual** — troque o [task-list.json](task-list.json) local e rode o seed, **com a run em
+andamento**:
 
 ```bash
 npm run seed
@@ -202,6 +209,60 @@ O que vale conferir antes:
 
 O total ("X de Y tasks concluídas") vem do banco, via `task_total` no `get_state` e no
 `list_completed`, então não há número para ajustar no código.
+
+---
+
+## Sincronização automática
+
+Um Worker com Cron Trigger busca o `task-list.json` do upstream todo dia às **09:00 UTC** (06:00 em
+Brasília, antes de o grupo jogar) e manda para a RPC `sync_tasks`. Tasks novas entram no pool
+sozinhas.
+
+É um **deploy separado do site**: o Cloudflare Pages não tem Cron Triggers, isso é do Workers.
+
+```bash
+npm run set-sync-secret       # gera o segredo e guarda o hash no banco
+npx wrangler secret put SUPABASE_URL
+npx wrangler secret put SUPABASE_ANON_KEY
+npx wrangler secret put SYNC_SECRET    # o mesmo valor impresso acima
+npm run worker:deploy
+```
+
+O horário está em [wrangler.toml](wrangler.toml) (`crons = ["0 9 * * *"]`); o código é o
+[worker/index.ts](worker/index.ts).
+
+### Por que um segredo próprio, e não a service_role key
+
+A `service_role` ignora a RLS: um Worker comprometido leria a tabela `members`, pegaria os tokens e
+viraria qualquer pessoa do grupo. O `SYNC_SECRET` só abre a `sync_tasks`, que só faz `upsert` em
+`tasks` — não lê membros, não toca em `assignments`, não conclui nada. O banco guarda só o hash
+bcrypt dele, no `group_state`, igual ao código do grupo.
+
+### O que a `sync_tasks` recusa
+
+| erro | quando |
+|---|---|
+| `INVALID_SYNC_SECRET` | segredo errado |
+| `SYNC_NOT_CONFIGURED` | `npm run set-sync-secret` nunca rodou |
+| `SYNC_BAD_PAYLOAD` | o corpo não é um array |
+| `SYNC_SHRANK` | o upstream veio **menor** que o banco — commit ruim lá em cima ou download truncado |
+| `SYNC_DUPLICATE_IDS` | dois ids iguais no mesmo payload |
+
+A guarda de encolhimento existe porque o `upsert` nunca deleta: um JSON pela metade não apagaria
+nada, mas passaria despercebido no log como se fosse um dia normal.
+
+### Acompanhar e disparar na mão
+
+```bash
+npm run worker:log    # wrangler tail — mostra {"inserted":N,"updated":N,"total":N} de cada execução
+curl -X POST https://<worker>.workers.dev -H "authorization: Bearer $SYNC_SECRET"
+```
+
+O `curl` dispara na hora, sem esperar o cron — útil logo depois do deploy, para saber se funcionou.
+
+⚠️ Vale a ressalva do gating: se o upstream adicionar uma task de um tier que o grupo **já fechou**,
+o tier atual volta para trás sozinho, de madrugada e sem avisar ninguém. É o comportamento correto
+do jogo, mas surpreende. O `npm run worker:log` é onde isso aparece.
 
 ---
 
@@ -284,7 +345,9 @@ src/
 supabase/
   schema.sql    tabelas, índices, RLS e as funções — fonte da verdade, idempotente
   tests/        suítes SQL + teste de concorrência
-scripts/        apply-schema · seed-tasks · set-code · reset · verify-rules
+worker/         index.ts — cron diário que sincroniza as tasks com o upstream
+wrangler.toml   config do Worker (deploy separado do Pages)
+scripts/        apply-schema · seed-tasks · set-code · set-sync-secret · reset · verify-rules
 public/         _redirects · robots.txt · favicon.ico · apple-touch-icon.png · og.png
 ```
 

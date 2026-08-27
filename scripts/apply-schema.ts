@@ -63,5 +63,5 @@ if (result.status !== 0) {
 
 console.log(`
   pronto. O relatorio acima e do proprio schema.sql — esperado:
-  5 tabelas, 4 indices unicos, 15 funcoes.
+  5 tabelas, 4 indices unicos, 17 funcoes.
 `)

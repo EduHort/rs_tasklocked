@@ -1,0 +1,18 @@
+# Worker do cron que sincroniza a lista de tasks com o upstream.
+# Deploy separado do site: o Cloudflare Pages nao tem Cron Triggers.
+#
+#   npm run worker:deploy
+#
+# Os tres segredos (nao ficam neste arquivo — ver README):
+#   npx wrangler secret put SUPABASE_URL
+#   npx wrangler secret put SUPABASE_ANON_KEY
+#   npx wrangler secret put SYNC_SECRET
+
+name = "rs-tasklocked-sync"
+main = "worker/index.ts"
+compatibility_date = "2026-08-27"
+
+# 09:00 UTC = 06:00 em Brasilia — antes de o grupo comecar a jogar, entao
+# ninguem ve o tier mudar embaixo do proprio board no meio de uma sessao.
+[triggers]
+crons = ["0 9 * * *"]

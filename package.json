@@ -11,6 +11,10 @@
     "schema": "tsx scripts/apply-schema.ts",
     "seed": "tsx scripts/seed-tasks.ts",
     "set-code": "tsx scripts/set-code.ts",
+    "set-sync-secret": "tsx scripts/set-sync-secret.ts",
+    "worker:dev": "npx wrangler dev",
+    "worker:deploy": "npx wrangler deploy",
+    "worker:log": "npx wrangler tail",
     "reset": "tsx scripts/reset.ts",
     "verify": "tsx scripts/verify-rules.ts",
     "upgrade": "npx npm-check-updates -u && npm install"
