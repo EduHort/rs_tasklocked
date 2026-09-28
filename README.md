@@ -254,15 +254,49 @@ nada, mas passaria despercebido no log como se fosse um dia normal.
 ### Acompanhar e disparar na mão
 
 ```bash
-npm run worker:log    # wrangler tail — mostra {"inserted":N,"updated":N,"total":N} de cada execução
+npm run worker:log    # wrangler tail — {"inserted":N,"updated":N,"total":N,"tier_before":N,"tier_after":N,"discord":"…"}
+export SYNC_SECRET='…'   # o valor que o `npm run set-sync-secret` imprimiu
 curl -X POST https://<worker>.workers.dev -H "authorization: Bearer $SYNC_SECRET"
 ```
 
 O `curl` dispara na hora, sem esperar o cron — útil logo depois do deploy, para saber se funcionou.
+O `$SYNC_SECRET` é uma variável do **seu terminal**: ele não está no `.env.local` e nem o Cloudflare
+nem o banco devolvem o valor. Sem o `export`, o header vai vazio e o Worker responde
+`nao autorizado`. Perdeu o valor? Gere outro com `npm run set-sync-secret` e mande o mesmo para o
+Worker com `npx wrangler secret put SYNC_SECRET` — os dois lados precisam bater.
 
 ⚠️ Vale a ressalva do gating: se o upstream adicionar uma task de um tier que o grupo **já fechou**,
-o tier atual volta para trás sozinho, de madrugada e sem avisar ninguém. É o comportamento correto
-do jogo, mas surpreende. O `npm run worker:log` é onde isso aparece.
+o tier atual volta para trás sozinho, de madrugada. É o comportamento correto do jogo, mas
+surpreende — por isso o aviso no Discord destaca esse caso.
+
+### Aviso no Discord
+
+Quando a sincronização traz task nova, o Worker posta num canal do Discord via **webhook** (não é um
+bot: o webhook é só uma URL que aceita um POST). A mensagem traz quantas tasks entraram e um card por
+task — nome com link da wiki, dica, imagem e a cor do tier. Se alguma delas reabrir um tier que o
+grupo já tinha fechado, a mensagem avisa que o tier atual voltou (ex.: de **Hard** para **Easy**).
+
+```bash
+# Discord: Configurações do canal → Integrações → Webhooks → Novo webhook → Copiar URL
+npx wrangler secret put DISCORD_WEBHOOK_URL
+npm run worker:deploy
+curl -X POST https://<worker>.workers.dev/discord-teste -H "authorization: Bearer $SYNC_SECRET"
+```
+
+O `/discord-teste` manda um aviso de exemplo (duas tasks do upstream, marcado como teste) sem mexer
+no banco — é o jeito de ver a mensagem sem esperar entrar task nova.
+
+- **Sem o segredo, nada muda:** o Worker só sincroniza, como antes.
+- **Falha do Discord não derruba o sync.** Quando o aviso sai, as tasks já estão no banco; o erro vai
+  para o log (`"discord":"falhou: …"`) e o cron conta como sucesso. O aviso perdido não volta — no
+  dia seguinte a task já não é nova.
+- **Banco vazio não avisa.** Na primeira carga (ou depois de um reset) seriam as ~1000 tasks de uma
+  vez; o Worker reconhece o caso e fica quieto.
+- **Até 10 cards por mensagem** (limite do Discord). Passou disso, a mensagem diz quantas foram e
+  mostra as 10 primeiras, dos tiers mais baixos para os mais altos.
+- **O `npm run seed` manual não avisa** — ele grava direto na tabela, sem passar pelo Worker.
+- A URL do webhook é um segredo: quem tiver ela posta no canal. Se vazar, apague o webhook no
+  Discord e crie outro.
 
 ---
 
@@ -315,6 +349,7 @@ docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=tasklocked -p 5
 psql ... -f supabase/schema.sql
 psql ... -f supabase/tests/rules.sql        # 48 asserções sequenciais
 psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
+psql ... -f supabase/tests/sync-tasks.sql   # 10 asserções do que o worker avisa no Discord
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool
 ```
 

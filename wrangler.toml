@@ -3,10 +3,11 @@
 #
 #   npm run worker:deploy
 #
-# Os tres segredos (nao ficam neste arquivo — ver README):
+# Os segredos (nao ficam neste arquivo — ver README):
 #   npx wrangler secret put SUPABASE_URL
 #   npx wrangler secret put SUPABASE_ANON_KEY
 #   npx wrangler secret put SYNC_SECRET
+#   npx wrangler secret put DISCORD_WEBHOOK_URL   # opcional: aviso de task nova
 
 name = "rs-tasklocked-sync"
 main = "worker/index.ts"

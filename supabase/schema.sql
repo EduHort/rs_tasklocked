@@ -1057,6 +1057,10 @@ $$;
 -- — a mesma forma que o seed-tasks.ts monta. Devolve o que mudou, para o worker
 -- registrar no log (e nao ficar invisivel o que rodou de madrugada).
 --
+-- `new_tasks` e `tier_before`/`tier_after` sao o que o worker avisa no Discord:
+-- quais tasks entraram e se alguma delas reabriu um tier que o grupo ja tinha
+-- fechado (o tier atual volta para tras — ver current_tier_order).
+--
 -- Nao apaga nada: id que sumiu do upstream continua no pool, exatamente como no
 -- seed manual. Tirar uma task do ar e decisao humana, nao de cron.
 -- -----------------------------------------------------------------------------
@@ -1073,6 +1077,8 @@ declare
   v_dupes    int;
   v_inserted int;
   v_updated  int;
+  v_new      json;
+  v_tier_before int;
 begin
   select sync_secret_hash into v_hash from group_state where id = true;
 
@@ -1113,6 +1119,8 @@ begin
     raise exception 'SYNC_DUPLICATE_IDS: % id(s) repetidos no upstream', v_dupes;
   end if;
 
+  v_tier_before := current_tier_order();
+
   with incoming as (
     select
       (t->>'id')::uuid             as id,
@@ -1151,17 +1159,30 @@ begin
       tags            = excluded.tags
     -- xmax = 0 identifica a linha que acabou de nascer; qualquer outro valor
     -- veio do caminho do `do update`.
-    returning (xmax = 0) as inserted
+    returning id, tier, tier_order, name, tip, wiki_link, image_link,
+              (xmax = 0) as inserted
   )
   select count(*) filter (where inserted)::int,
-         count(*) filter (where not inserted)::int
-    into v_inserted, v_updated
+         count(*) filter (where not inserted)::int,
+         coalesce(json_agg(json_build_object(
+           'id',         id,
+           'tier',       tier,
+           'name',       name,
+           'tip',        tip,
+           'wiki_link',  wiki_link,
+           'image_link', image_link
+         ) order by tier_order, name, id) filter (where inserted), '[]'::json)
+    into v_inserted, v_updated, v_new
   from upserted;
 
   return json_build_object(
-    'inserted', v_inserted,
-    'updated',  v_updated,
-    'total',    (select count(*)::int from tasks)
+    'inserted',    v_inserted,
+    'updated',     v_updated,
+    'total',       (select count(*)::int from tasks),
+    'new_tasks',   v_new,
+    -- null = o grupo tinha concluido tudo (antes) / continua tudo concluido (depois)
+    'tier_before', v_tier_before,
+    'tier_after',  current_tier_order()
   );
 end;
 $$;
