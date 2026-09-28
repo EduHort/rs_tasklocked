@@ -156,7 +156,7 @@ revoke all on tasks, group_state, members, assignments, extra_assignments
 --   NO_ACTIVE_TASK · TIER_LOCKED · ALL_DONE · UNDO_EXPIRED · NOT_INITIALIZED
 --   TASK_NOT_FOUND · ALREADY_COMPLETED · TASK_TAKEN
 --   NOT_COMPLETED_YET · EXTRA_ALREADY_ACTIVE · EXTRA_ALREADY_DONE · NO_EXTRA_TASK
---   EXTRA_OWN_TASK
+--   EXTRA_OWN_TASK · NAME_TAKEN
 -- =============================================================================
 
 -- Resolve o token -> member_id. Toda funcao comeca por aqui: e o unico jeito
@@ -259,6 +259,50 @@ begin
     'token',     v_member.token,
     'name',      v_member.name
   );
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- rename_member: troca o nome de quem chamou — e so o dele.
+--
+-- O nome tambem e o "login": o join_group retoma o membro pelo nome. Depois de
+-- trocar, a pessoa entra com o nome NOVO, e o antigo fica livre (quem entrar
+-- com ele vira um membro novo). O token nao muda, entao as sessoes abertas
+-- continuam valendo.
+--
+-- Nada mais guarda o nome: tasks, conclusoes e extras apontam para o id, entao
+-- a troca aparece em todas as telas, inclusive no historico.
+-- -----------------------------------------------------------------------------
+create or replace function rename_member(p_token uuid, p_name text)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_name      text := trim(p_name);
+  v_name_key  text := lower(trim(p_name));
+begin
+  if v_name is null or v_name = '' or length(v_name) > 20 then
+    raise exception 'INVALID_NAME';
+  end if;
+
+  -- Trocar so a caixa do proprio nome ("edu" -> "Edu") e permitido: o
+  -- name_key e o mesmo, e ele e da propria pessoa.
+  if exists (select 1 from members where name_key = v_name_key and id <> v_member_id) then
+    raise exception 'NAME_TAKEN';
+  end if;
+
+  begin
+    update members set name = v_name, name_key = v_name_key where id = v_member_id;
+  exception when unique_violation then
+    -- Duas pessoas pegando o mesmo nome no mesmo instante: o check acima
+    -- passou para as duas, e o indice unico barrou a segunda.
+    raise exception 'NAME_TAKEN';
+  end;
+
+  return json_build_object('member_id', v_member_id, 'name', v_name);
 end;
 $$;
 
@@ -683,6 +727,10 @@ begin
           t.display_item_id,
           (a.id is not null) as taken,
           mem.name           as holder_name,
+          -- "e a minha?" decidido pelo id, nao pelo nome: o nome muda
+          -- (rename_member), e a tela nao pode confundir a propria task com a
+          -- de outra pessoa so porque a lista chegou com o nome antigo.
+          coalesce(a.member_id = v_member_id, false) as mine,
           -- `extra_assignments_member_task_unique` garante no maximo uma linha
           -- por (membro, task), entao este join nao duplica a lista.
           coalesce(ex.status = 'active', false)    as extra_active,
@@ -1206,6 +1254,7 @@ grant execute on function set_sync_secret(text) to service_role;
 grant execute on function sync_tasks(text, jsonb) to anon, authenticated;
 
 grant execute on function join_group(text, text)          to anon, authenticated;
+grant execute on function rename_member(uuid, text)       to anon, authenticated;
 grant execute on function get_state(uuid)                 to anon, authenticated;
 grant execute on function roll_task(uuid)                 to anon, authenticated;
 grant execute on function complete_task(uuid)             to anon, authenticated;
@@ -1223,7 +1272,7 @@ notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 17 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 18 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
@@ -1238,7 +1287,7 @@ select
                         'extra_assignments_member_task_unique'))         as indices_unicos,
   (select count(*) from information_schema.routines
     where routine_schema = 'public'
-      and routine_name in ('join_group','get_state','roll_task','complete_task',
+      and routine_name in ('join_group','rename_member','get_state','roll_task','complete_task',
                            'undo_complete','list_completed','list_pending',
                            'complete_task_by_id','set_group_code',
                            'auth_member','current_tier_order',

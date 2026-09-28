@@ -176,7 +176,7 @@ export function PendingPage({
       ) : (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface">
           {items.map((task) => {
-            const mine = task.taken && task.holder_name === session.name
+            const mine = task.mine
             const lockedByOther = task.taken && !mine
 
             return (

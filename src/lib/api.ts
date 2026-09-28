@@ -16,6 +16,7 @@ import type {
 const MESSAGES: Record<string, string> = {
   INVALID_CODE: 'Código do grupo incorreto.',
   INVALID_NAME: 'Escolha um nome de 1 a 20 caracteres.',
+  NAME_TAKEN: 'Esse nome já é de outra pessoa do grupo.',
   GROUP_FULL: 'O grupo já está cheio (5 pessoas).',
   INVALID_TOKEN: 'Sua sessão expirou. Entre de novo com o código do grupo.',
   ALREADY_ACTIVE: 'Você já tem uma task ativa. Conclua ela primeiro.',
@@ -80,6 +81,17 @@ export function joinGroup(code: string, name: string): Promise<Session> {
     p_code: code,
     p_name: name,
   }).then((row) => ({ memberId: row.member_id, token: row.token, name: row.name }))
+}
+
+/**
+ * Troca o nome do dono do token. O token continua o mesmo; o que muda e o nome
+ * que ele usa para entrar de novo. Devolve o nome como ficou salvo (com trim).
+ */
+export function renameMember(token: string, name: string): Promise<string> {
+  return call<{ member_id: string; name: string }>('rename_member', {
+    p_token: token,
+    p_name: name,
+  }).then((row) => row.name)
 }
 
 export function getState(token: string): Promise<GroupState> {

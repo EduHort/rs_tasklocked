@@ -134,6 +134,11 @@ export type PendingTask = {
   taken: boolean
   /** nome de quem esta com ela, ou null se estiver livre */
   holder_name: string | null
+  /**
+   * true se quem esta com ela e quem esta olhando. Use isto, nao o nome: o
+   * nome pode mudar, e a lista pode ter chegado com o antigo.
+   */
+  mine: boolean
   /** true se esta e a task extra ATIVA de quem esta olhando */
   extra_active: boolean
   /** true se quem esta olhando ja fez esta task de extra */

@@ -81,8 +81,13 @@ select t_assert('atribuir dois ids do MESMO nome -> aceito',
   t_try(format($$insert into assignments (member_id, task_id, status)
     select (select id from members where name = case x.rn when 1 then 'Edu' else 'Ana' end),
            x.id, 'active'
-    from (select id, row_number() over (order by id) as rn
-            from tasks where tier='easy' and name=%L order by id limit 2) x$$, :'dup_name')), 'OK');
+    from (select t.id, row_number() over (order by t.id) as rn
+            from tasks t
+           where t.tier='easy' and t.name=%L
+             -- so as livres: o nome pode ter 3+ ids, e o sorteio da secao 2
+             -- pode ter pego um dos primeiros
+             and not exists (select 1 from assignments a where a.task_id = t.id)
+           order by t.id limit 2) x$$, :'dup_name')), 'OK');
 select t_assert('Edu e Ana estao com o mesmo texto na tela',
   (select count(distinct t.name)::text from assignments a
      join tasks t on t.id=a.task_id join members m on m.id=a.member_id
@@ -219,5 +224,61 @@ select t_assert('a Ana conclui a propria ativa -> OK',
 select t_assert('e ela ficou sem task ativa',
   (select count(*)::text from assignments a join members m on m.id=a.member_id
     where m.name='Ana' and a.status='active'), '0');
+
+\echo '\n--- 10. rename_member ---'
+
+-- Garante uma task ativa do Edu para checar o `mine` (ALREADY_ACTIVE tambem serve).
+-- As buscas abaixo filtram pelo nome dela: o tier pode ter mais de 200
+-- pendentes, e ela cairia fora da pagina.
+select t_try($$select roll_task((select token from tk where name='Edu'))$$) is not null as ok \gset
+select a.task_id as edu_active from assignments a join members m on m.id=a.member_id
+  where m.name='Edu' and a.status='active' \gset
+
+select t_assert('mine: a ativa do Edu e dele',
+  (select e->>'mine' from json_array_elements(
+     list_pending((select token from tk where name='Edu'), 200, 0, null,
+                  (select name from tasks where id = :'edu_active'))->'items') e
+   where e->>'id' = :'edu_active'), 'true');
+select t_assert('mine: vista pela Ana, nao e dela',
+  (select e->>'mine' from json_array_elements(
+     list_pending((select token from tk where name='Ana'), 200, 0, null,
+                  (select name from tasks where id = :'edu_active'))->'items') e
+   where e->>'id' = :'edu_active'), 'false');
+
+select t_assert('nome de outra pessoa -> NAME_TAKEN',
+  t_try($$select rename_member((select token from tk where name='Edu'), 'Ana')$$), 'NAME_TAKEN');
+select t_assert('...mesmo com outra caixa e espaco',
+  t_try($$select rename_member((select token from tk where name='Edu'), '  aNA ')$$), 'NAME_TAKEN');
+select t_assert('nome vazio -> INVALID_NAME',
+  t_try($$select rename_member((select token from tk where name='Edu'), '   ')$$), 'INVALID_NAME');
+select t_assert('nome com 21 caracteres -> INVALID_NAME',
+  t_try($$select rename_member((select token from tk where name='Edu'), repeat('x', 21))$$), 'INVALID_NAME');
+select t_assert('token invalido -> INVALID_TOKEN',
+  t_try($$select rename_member('00000000-0000-0000-0000-000000000000', 'Novo')$$), 'INVALID_TOKEN');
+select t_assert('trocar so a caixa do proprio nome -> OK',
+  t_try($$select rename_member((select token from tk where name='Edu'), 'EDU')$$), 'OK');
+
+select t_assert('troca para um nome livre (com trim)',
+  rename_member((select token from tk where name='Edu'), '  Eduardo  ')->>'name', 'Eduardo');
+select t_assert('o membro e o mesmo (id e token nao mudam)',
+  (select count(*)::text from members m join tk on tk.token = m.token
+    where tk.name = 'Edu' and m.name = 'Eduardo' and m.name_key = 'eduardo'), '1');
+select t_assert('o nome novo aparece na lista de pendentes',
+  (select e->>'holder_name' from json_array_elements(
+     list_pending((select token from tk where name='Ana'), 200, 0, null,
+                  (select name from tasks where id = :'edu_active'))->'items') e
+   where e->>'id' = :'edu_active'), 'Eduardo');
+select t_assert('...e o mine continua certo',
+  (select e->>'mine' from json_array_elements(
+     list_pending((select token from tk where name='Edu'), 200, 0, null,
+                  (select name from tasks where id = :'edu_active'))->'items') e
+   where e->>'id' = :'edu_active'), 'true');
+select t_assert('login com o nome novo retoma o mesmo membro',
+  ((join_group('TESTE1', 'eduardo')->>'token') = (select token::text from tk where name='Edu'))::text,
+  'true');
+-- O grupo aqui esta cheio: se o nome antigo ainda retomasse o Edu, isto daria
+-- OK. GROUP_FULL prova que ele virou tentativa de membro novo.
+select t_assert('o nome antigo nao retoma mais o Edu',
+  t_try($$select join_group('TESTE1', 'Edu')$$), 'GROUP_FULL');
 
 \echo '\n=== TODOS OS TESTES PASSARAM ===\n'

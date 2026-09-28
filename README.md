@@ -20,6 +20,8 @@ Cada um sorteia **a sua própria** task do pool compartilhado, faz no jogo e mar
 **Telas:** `/board` (sua task + a extra + a do grupo) · `/completed` (o que já saiu, com o contador
 de quantas pessoas fizeram cada task, o botão de pegar extra, busca e filtros por "já fiz / não fiz" e
 por quem fez) · `/pending` (todas as tasks que faltam, com busca, filtro por tier e conclusão manual).
+Clicar no seu nome, no topo, troca o nome — e é com o nome novo que você entra da próxima vez; o
+antigo fica livre. Os outros aparelhos logados pegam o nome novo sozinhos ao abrir o board.
 
 Stack: React + TypeScript + Tailwind (Vite) · Supabase (Postgres) · Cloudflare Pages.
 
@@ -31,7 +33,7 @@ Stack: React + TypeScript + Tailwind (Vite) · Supabase (Postgres) · Cloudflare
 Browser (SPA)
    │  anon key — sem acesso direto a nenhuma tabela
    ▼
-Supabase RPC   join_group · get_state · roll_task · complete_task · undo_complete
+Supabase RPC   join_group · rename_member · get_state · roll_task · complete_task · undo_complete
                list_completed · list_pending · complete_task_by_id
                take_extra_task · complete_extra_task
    ▼
@@ -347,7 +349,7 @@ schema ([supabase/tests/](supabase/tests/)):
 ```bash
 docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=tasklocked -p 55432:5432 postgres:16-alpine
 psql ... -f supabase/schema.sql
-psql ... -f supabase/tests/rules.sql        # 48 asserções sequenciais
+psql ... -f supabase/tests/rules.sql        # 62 asserções sequenciais
 psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
 psql ... -f supabase/tests/sync-tasks.sql   # 10 asserções do que o worker avisa no Discord
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool

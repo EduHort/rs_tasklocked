@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
 import { ExtraTaskCard } from '../components/ExtraTaskCard.tsx'
 import { MemberCard } from '../components/MemberCard.tsx'
@@ -11,9 +11,12 @@ import type { Session } from '../lib/types.ts'
 export function BoardPage({
   session,
   onAuthError,
+  onNameChange,
 }: {
   session: Session
   onAuthError: () => void
+  /** O nome no banco nao bate com o da sessao salva: foi trocado em outro aparelho. */
+  onNameChange: (name: string) => void
 }) {
   const { state, loading, error, refresh } = useGroupState(session.token, onAuthError)
   const [busy, setBusy] = useState(false)
@@ -21,6 +24,17 @@ export function BoardPage({
 
   const me = state?.members.find((m) => m.id === state.me) ?? null
   const others = state?.members.filter((m) => m.id !== state.me) ?? []
+
+  // A sessao guarda o nome do login. Se a pessoa trocou o nome em outro
+  // aparelho, este aqui so descobriria ao entrar de novo — o polling corrige.
+  //
+  // So reage quando o nome do BANCO muda (inclusive na primeira resposta), de
+  // proposito sem `session.name` nas deps: logo depois de trocar o nome AQUI, o
+  // ultimo poll ainda traz o antigo, e reagir a sessao desfaria a troca.
+  const serverName = me?.name
+  useEffect(() => {
+    if (serverName && serverName !== session.name) onNameChange(serverName)
+  }, [serverName])
 
   /** Roda a acao, mostra o erro traduzido e sincroniza o board na hora. */
   async function run(action: () => Promise<unknown>) {

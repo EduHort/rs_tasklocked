@@ -5,7 +5,15 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? 'bg-surface-2 text-accent' : 'text-muted hover:text-ink'
   }`
 
-export function AppHeader({ name, onLogout }: { name: string; onLogout: () => void }) {
+export function AppHeader({
+  name,
+  onRename,
+  onLogout,
+}: {
+  name: string
+  onRename: () => void
+  onLogout: () => void
+}) {
   return (
     <header className="border-b border-border bg-surface/60">
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
@@ -23,8 +31,17 @@ export function AppHeader({ name, onLogout }: { name: string; onLogout: () => vo
           </NavLink>
         </nav>
 
-        <div className="ml-auto flex items-center gap-3 text-sm text-muted">
-          <span className="hidden sm:inline">{name}</span>
+        <div className="ml-auto flex min-w-0 items-center gap-3 text-sm text-muted">
+          {/* Visivel tambem no celular: e o unico caminho para trocar o nome. */}
+          <button
+            type="button"
+            onClick={onRename}
+            title="Trocar seu nome"
+            className="max-w-40 truncate underline decoration-dotted underline-offset-4
+              hover:text-ink"
+          >
+            {name}
+          </button>
           <button type="button" onClick={onLogout} className="hover:text-ink">
             sair
           </button>
