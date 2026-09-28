@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button.tsx'
 import { ConfirmDialog } from '../components/ConfirmDialog.tsx'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
+import { FilterPill } from '../components/FilterPill.tsx'
 import { TaskImage } from '../components/TaskImage.tsx'
 import { TierBadge } from '../components/TierBadge.tsx'
 import { completeTaskById, isAuthError, listPending, takeExtraTask } from '../lib/api.ts'
@@ -303,30 +304,5 @@ function ExtraButton({
     >
       Pegar extra
     </Button>
-  )
-}
-
-function FilterPill({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-md border px-2.5 py-1 text-xs font-semibold uppercase tracking-wider
-        transition ${
-          active
-            ? 'border-accent bg-surface-2 text-accent'
-            : 'border-border bg-surface text-muted hover:text-ink'
-        }`}
-    >
-      {children}
-    </button>
   )
 }

@@ -314,6 +314,76 @@ select t_assert('...e so ela',
    where (x->>'task_id')::uuid = (select edu_task from fx)),
   'false');
 
+\echo '\n--- 8b. filtros da /completed ---'
+
+-- Estado aqui: edu_task feita por Edu (pool) + Ana e Bruno (extra) ·
+-- ana_task so pela Ana (o Edu esta com ela de extra ATIVA, que nao conta) ·
+-- bruno_task so pelo Bruno.
+
+select t_assert('ja fiz (Edu): so a que ele tirou do pool',
+  (select string_agg(x->>'task_id', ',')
+   from json_array_elements(list_completed((select token from tk where name='Edu'),
+                                           p_done_by_me => true)->'items') x),
+  (select edu_task::text from fx));
+
+select t_assert('nao fiz (Edu): extra ativa ainda nao conta como feita',
+  (list_completed((select token from tk where name='Edu'),
+                  p_done_by_me => false)->>'match_total'),
+  '2');
+
+select t_assert('ja fiz (Ana): pool + extra concluida',
+  (list_completed((select token from tk where name='Ana'),
+                  p_done_by_me => true)->>'match_total'),
+  '2');
+
+select t_assert('feitas pela Ana, vistas pelo Bruno',
+  (select count(*)::text
+   from json_array_elements(list_completed((select token from tk where name='Bruno'),
+                                           p_done_by => (select id from members where name='Ana'))->'items') x
+   where (x->>'task_id')::uuid in ((select edu_task from fx), (select ana_task from fx))),
+  '2');
+
+select t_assert('feitas pelo Bruno E que o Edu nao fez',
+  (select string_agg(x->>'task_id', ',')
+   from json_array_elements(list_completed((select token from tk where name='Edu'),
+                                           p_done_by_me => false,
+                                           p_done_by => (select id from members where name='Bruno'))->'items') x),
+  (select bruno_task::text from fx));
+
+select t_assert('busca ignora maiuscula e espaco em volta',
+  (select bool_or((x->>'task_id')::uuid = (select ana_task from fx))::text
+   from json_array_elements(list_completed(
+     (select token from tk where name='Ana'),
+     p_search => '  ' || upper((select name from tasks where id = (select ana_task from fx))) || ' '
+   )->'items') x),
+  'true');
+
+select t_assert('busca sem resultado',
+  (list_completed((select token from tk where name='Ana'), p_search => 'zzz-nao-existe')::jsonb
+     -> 'items')::text,
+  '[]');
+
+select t_assert('busca vazia = sem filtro',
+  (list_completed((select token from tk where name='Ana'), p_search => '   ')->>'match_total'),
+  '3');
+
+select t_assert('total continua o do pool inteiro com filtro',
+  (list_completed((select token from tk where name='Edu'),
+                  p_done_by_me => true)->>'total'),
+  '3');
+
+select t_assert('paginacao respeita o filtro',
+  (select json_array_length(p->'items') || '/' || (p->>'match_total')
+   from (select list_completed((select token from tk where name='Edu'), 1, 0,
+                               p_done_by_me => false) as p) s),
+  '1/2');
+
+select t_assert('members: opcoes do filtro em ordem de entrada',
+  (select string_agg(m->>'name', ' ' order by ord)
+   from json_array_elements(list_completed((select token from tk where name='Ana'))->'members')
+        with ordinality as e(m, ord)),
+  'Edu Ana Bruno');
+
 \echo '\n--- 9. saida do membro leva as extras junto ---'
 
 select t_assert('delete do membro cascateia nas extras',

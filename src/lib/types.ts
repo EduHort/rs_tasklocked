@@ -100,12 +100,16 @@ export type CompletedEntry = {
 }
 
 export type CompletedPage = {
-  /** quantas tasks sairam do pool — as extras nao entram aqui */
+  /** quantas tasks sairam do pool — as extras nao entram aqui. Ignora o filtro. */
   total: number
+  /** quantas passam no filtro da busca — e o que a paginacao usa */
+  match_total: number
   /** tamanho do pool hoje — o mesmo `task_total` do `GroupState` */
   task_total: number
   /** denominador do contador: quantos membros o grupo tem */
   member_total: number
+  /** todo mundo do grupo, em ordem de entrada — as opcoes do filtro "feitas por" */
+  members: { id: string; name: string }[]
   /** true se quem olha ja esta com uma extra (so pode haver uma por vez) */
   has_active_extra: boolean
   items: CompletedEntry[]

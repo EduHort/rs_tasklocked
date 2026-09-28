@@ -480,8 +480,28 @@ $$;
 -- incrementam `completed_count`, o contador de quantas PESSOAS do grupo ja
 -- fizeram aquela task (denominador = `member_total`, no topo do payload), e
 -- entram em `completions` com o nome e a data de quem as fez.
+--
+-- Filtros opcionais, todos combinados com AND:
+--   p_search     — pedaco do nome da task (mesmo ilike do list_pending)
+--   p_done_by_me — true: so as que quem olha ja fez · false: so as que nao fez
+--   p_done_by    — so as que ESSE membro ja fez
+-- "Ja fez" vale tanto para quem tirou a task do pool quanto para quem concluiu
+-- de extra. `total` continua sendo o do pool inteiro, sem filtro;
+-- `match_total` e o que passou no filtro (e o que a paginacao usa).
 -- -----------------------------------------------------------------------------
-create or replace function list_completed(p_token uuid, p_limit int default 50, p_offset int default 0)
+
+-- A assinatura ganhou parametros: sem o drop, o `create or replace` criaria uma
+-- sobrecarga ao lado da antiga, e a chamada com 3 argumentos ficaria ambigua.
+drop function if exists list_completed(uuid, int, int);
+
+create or replace function list_completed(
+  p_token      uuid,
+  p_limit      int     default 50,
+  p_offset     int     default 0,
+  p_search     text    default null,
+  p_done_by_me boolean default null,
+  p_done_by    uuid    default null
+)
 returns json
 language plpgsql
 security definer
@@ -491,93 +511,112 @@ declare
   v_member_id uuid := auth_member(p_token);
   v_limit     int  := least(greatest(coalesce(p_limit, 50), 1), 200);
   v_offset    int  := greatest(coalesce(p_offset, 0), 0);
+  v_search    text := nullif(trim(coalesce(p_search, '')), '');
 begin
-  return json_build_object(
-    'total', (select count(*)::int from assignments where status = 'completed'),
+  return (
+    -- As tasks que sairam do pool e passam no filtro, com `doers`: todo mundo
+    -- que ja fez cada uma (quem tirou do pool + extras concluidas).
+    with matching as (
+      select a.id, a.task_id, a.member_id, a.completed_at, d.doers
+      from assignments a
+      join tasks t on t.id = a.task_id
+      cross join lateral (
+        select array_append(array(
+          select e.member_id from extra_assignments e
+          where e.task_id = a.task_id and e.status = 'completed'
+        ), a.member_id) as doers
+      ) d
+      where a.status = 'completed'
+        and (v_search     is null or t.name ilike '%' || v_search || '%')
+        and (p_done_by_me is null or (v_member_id = any(d.doers)) = p_done_by_me)
+        and (p_done_by    is null or p_done_by = any(d.doers))
+    )
+    select json_build_object(
+      'total', (select count(*)::int from assignments where status = 'completed'),
 
-    -- Mesmo denominador do get_state: quantas tasks o pool tem hoje.
-    'task_total', (select count(*)::int from tasks),
+      'match_total', (select count(*)::int from matching),
 
-    'member_total', (select count(*)::int from members),
+      -- Mesmo denominador do get_state: quantas tasks o pool tem hoje.
+      'task_total', (select count(*)::int from tasks),
 
-    -- Bloqueia pegar uma segunda extra sem precisar tentar e tomar erro.
-    'has_active_extra', exists (
-      select 1 from extra_assignments
-      where member_id = v_member_id and status = 'active'
-    ),
+      'member_total', (select count(*)::int from members),
 
-    'items', coalesce((
-      select json_agg(x order by x.completed_at desc)
-      from (
-        select
-          a.id,
-          a.task_id,
-          a.completed_at,
-          mem.name as member_name,
-          t.tier,
-          t.name,
-          t.short_name,
-          t.wiki_link,
-          t.image_link,
-          t.display_item_id,
+      -- Opcoes do filtro "feitas por".
+      'members', coalesce((
+        select json_agg(json_build_object('id', id, 'name', name) order by created_at)
+        from members
+      ), '[]'::json),
 
-          -- 1 (quem tirou do pool) + quantas extras ja concluidas.
-          1 + (
-            select count(*)
-            from extra_assignments e
-            where e.task_id = a.task_id and e.status = 'completed'
-          )::int as completed_count,
+      -- Bloqueia pegar uma segunda extra sem precisar tentar e tomar erro.
+      'has_active_extra', exists (
+        select 1 from extra_assignments
+        where member_id = v_member_id and status = 'active'
+      ),
 
-          -- Toda conclusao daquela task: [{ name, completed_at, extra }], em
-          -- ordem cronologica.
-          --
-          -- Quem tirou a task do pool NAO vem necessariamente primeiro: desde
-          -- que `take_extra_task` aceita a task ativa de outra pessoa, uma
-          -- extra pode ser concluida antes de a task sair do pool. Por isso a
-          -- lista e ordenada de fato, em vez de assumir a ordem.
-          (
-            select coalesce(jsonb_agg(
-              jsonb_build_object(
-                'name',         c.name,
-                'completed_at', c.completed_at,
-                'extra',        c.extra
-              ) order by c.completed_at
-            ), '[]'::jsonb)
-            from (
-              select mem.name as name, a.completed_at as completed_at, false as extra
-              union all
-              select m2.name, e.completed_at, true
+      'items', coalesce((
+        select json_agg(x order by x.completed_at desc)
+        from (
+          select
+            a.id,
+            a.task_id,
+            a.completed_at,
+            mem.name as member_name,
+            t.tier,
+            t.name,
+            t.short_name,
+            t.wiki_link,
+            t.image_link,
+            t.display_item_id,
+
+            -- 1 (quem tirou do pool) + quantas extras ja concluidas.
+            1 + (
+              select count(*)
               from extra_assignments e
-              join members m2 on m2.id = e.member_id
               where e.task_id = a.task_id and e.status = 'completed'
-            ) c
-          ) as completions,
+            )::int as completed_count,
 
-          (
-            a.member_id = v_member_id
-            or exists (
+            -- Toda conclusao daquela task: [{ name, completed_at, extra }], em
+            -- ordem cronologica.
+            --
+            -- Quem tirou a task do pool NAO vem necessariamente primeiro: desde
+            -- que `take_extra_task` aceita a task ativa de outra pessoa, uma
+            -- extra pode ser concluida antes de a task sair do pool. Por isso a
+            -- lista e ordenada de fato, em vez de assumir a ordem.
+            (
+              select coalesce(jsonb_agg(
+                jsonb_build_object(
+                  'name',         c.name,
+                  'completed_at', c.completed_at,
+                  'extra',        c.extra
+                ) order by c.completed_at
+              ), '[]'::jsonb)
+              from (
+                select mem.name as name, a.completed_at as completed_at, false as extra
+                union all
+                select m2.name, e.completed_at, true
+                from extra_assignments e
+                join members m2 on m2.id = e.member_id
+                where e.task_id = a.task_id and e.status = 'completed'
+              ) c
+            ) as completions,
+
+            v_member_id = any(a.doers) as done_by_me,
+
+            exists (
               select 1 from extra_assignments e
               where e.task_id = a.task_id
                 and e.member_id = v_member_id
-                and e.status = 'completed'
-            )
-          ) as done_by_me,
+                and e.status = 'active'
+            ) as extra_active
 
-          exists (
-            select 1 from extra_assignments e
-            where e.task_id = a.task_id
-              and e.member_id = v_member_id
-              and e.status = 'active'
-          ) as extra_active
-
-        from assignments a
-        join members mem on mem.id = a.member_id
-        join tasks t     on t.id = a.task_id
-        where a.status = 'completed'
-        order by a.completed_at desc
-        limit v_limit offset v_offset
-      ) x
-    ), '[]'::json)
+          from matching a
+          join members mem on mem.id = a.member_id
+          join tasks t     on t.id = a.task_id
+          order by a.completed_at desc
+          limit v_limit offset v_offset
+        ) x
+      ), '[]'::json)
+    )
   );
 end;
 $$;
@@ -1150,7 +1189,7 @@ grant execute on function get_state(uuid)                 to anon, authenticated
 grant execute on function roll_task(uuid)                 to anon, authenticated;
 grant execute on function complete_task(uuid)             to anon, authenticated;
 grant execute on function undo_complete(uuid)             to anon, authenticated;
-grant execute on function list_completed(uuid, int, int)  to anon, authenticated;
+grant execute on function list_completed(uuid, int, int, text, boolean, uuid) to anon, authenticated;
 grant execute on function complete_task_by_id(uuid, uuid) to anon, authenticated;
 grant execute on function list_pending(uuid, int, int, text, text) to anon, authenticated;
 grant execute on function take_extra_task(uuid, uuid)     to anon, authenticated;

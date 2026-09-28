@@ -100,11 +100,28 @@ export function undoComplete(token: string): Promise<{ assignment_id: string }> 
   return call('undo_complete', { p_token: token })
 }
 
-export function listCompleted(token: string, limit = 50, offset = 0): Promise<CompletedPage> {
+/**
+ * Tasks que ja sairam do pool. `doneByMe` filtra pelo que quem olha ja fez
+ * (true) ou nao fez (false); `doneBy` pelo que um membro fez. "Fez" inclui
+ * concluir de extra. null = sem aquele filtro.
+ */
+export function listCompleted(
+  token: string,
+  {
+    limit = 50,
+    offset = 0,
+    search = '',
+    doneByMe = null as boolean | null,
+    doneBy = null as string | null,
+  } = {},
+): Promise<CompletedPage> {
   return call<CompletedPage>('list_completed', {
     p_token: token,
     p_limit: limit,
     p_offset: offset,
+    p_search: search || null,
+    p_done_by_me: doneByMe,
+    p_done_by: doneBy,
   })
 }
 

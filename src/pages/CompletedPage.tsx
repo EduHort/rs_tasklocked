@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button.tsx'
 import { ConfirmDialog } from '../components/ConfirmDialog.tsx'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
+import { FilterPill } from '../components/FilterPill.tsx'
 import { TaskImage } from '../components/TaskImage.tsx'
 import { TierBadge } from '../components/TierBadge.tsx'
 import { completeExtraById, isAuthError, listCompleted, takeExtraTask } from '../lib/api.ts'
@@ -23,6 +24,9 @@ const PAGE = 50
  *                 depois. Continua limitado a uma extra ativa por vez.
  *
  * Nenhuma das duas mexe no pool: as duas so sobem o contador de pessoas.
+ *
+ * Busca e filtros rodam no banco, nao na lista carregada: a lista e paginada,
+ * e filtrar so o que ja chegou esconderia o que ainda nao chegou.
  */
 export function CompletedPage({
   session,
@@ -33,41 +37,74 @@ export function CompletedPage({
 }) {
   const [items, setItems] = useState<CompletedEntry[]>([])
   const [total, setTotal] = useState(0)
+  const [matchTotal, setMatchTotal] = useState(0)
+  const [nextOffset, setNextOffset] = useState(0)
   const [taskTotal, setTaskTotal] = useState(0)
   const [memberTotal, setMemberTotal] = useState(0)
+  const [members, setMembers] = useState<{ id: string; name: string }[]>([])
   const [hasActiveExtra, setHasActiveExtra] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [query, setQuery] = useState('')
+  /** true = so as que eu fiz · false = so as que eu nao fiz · null = todas */
+  const [doneByMe, setDoneByMe] = useState<boolean | null>(null)
+  /** id do membro: so as que ele fez · null = de qualquer pessoa */
+  const [doneBy, setDoneBy] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<{
     entry: CompletedEntry
     action: 'take' | 'complete'
   } | null>(null)
   const [busy, setBusy] = useState(false)
 
+  const filtering = query !== '' || doneByMe !== null || doneBy !== null
+
+  // Descarta resposta de filtro que o usuario ja trocou (a antiga pode chegar
+  // depois da nova e sobrescrever a lista certa).
+  const requestId = useRef(0)
+
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(search.trim()), 300)
+    return () => clearTimeout(id)
+  }, [search])
+
   const loadPage = useCallback(
     async (offset: number) => {
+      const id = ++requestId.current
       setLoading(true)
       try {
-        const page = await listCompleted(session.token, PAGE, offset)
+        const page = await listCompleted(session.token, {
+          limit: PAGE,
+          offset,
+          search: query,
+          doneByMe,
+          doneBy,
+        })
+        if (id !== requestId.current) return
         setTotal(page.total)
+        setMatchTotal(page.match_total)
         setTaskTotal(page.task_total)
         setMemberTotal(page.member_total)
+        setMembers(page.members)
         setHasActiveExtra(page.has_active_extra)
         setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
+        setNextOffset(offset + page.items.length)
         setError(null)
       } catch (err) {
         if (isAuthError(err)) {
           onAuthError()
           return
         }
+        if (id !== requestId.current) return
         setError(err instanceof Error ? err.message : 'Falha ao carregar a lista.')
       } finally {
-        setLoading(false)
+        if (id === requestId.current) setLoading(false)
       }
     },
-    [session.token, onAuthError],
+    [session.token, onAuthError, query, doneByMe, doneBy],
   )
 
+  // Recarrega do zero sempre que a busca ou um filtro mudam.
   useEffect(() => {
     void loadPage(0)
   }, [loadPage])
@@ -103,22 +140,30 @@ export function CompletedPage({
       // Atualiza no lugar, como o takeExtra. Se a task era a extra ativa, ela
       // deixa de ser — o board libera para pegar outra.
       if (entry.extra_active) setHasActiveExtra(false)
-      setItems((prev) =>
-        prev.map((it) =>
-          it.task_id === entry.task_id
-            ? {
-                ...it,
-                done_by_me: true,
-                extra_active: false,
-                completed_count: it.completed_count + 1,
-                completions: [
-                  ...it.completions,
-                  { name: session.name, completed_at: new Date().toISOString(), extra: true },
-                ],
-              }
-            : it,
-        ),
-      )
+      if (doneByMe === false) {
+        // No filtro "nao fiz" ela deixou de caber: sai da lista, e o offset
+        // anda junto para nao pular item no "carregar mais".
+        setItems((prev) => prev.filter((it) => it.task_id !== entry.task_id))
+        setMatchTotal((n) => Math.max(0, n - 1))
+        setNextOffset((n) => Math.max(0, n - 1))
+      } else {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.task_id === entry.task_id
+              ? {
+                  ...it,
+                  done_by_me: true,
+                  extra_active: false,
+                  completed_count: it.completed_count + 1,
+                  completions: [
+                    ...it.completions,
+                    { name: session.name, completed_at: new Date().toISOString(), extra: true },
+                  ],
+                }
+              : it,
+          ),
+        )
+      }
       setError(null)
     } catch (err) {
       if (isAuthError(err)) {
@@ -139,15 +184,55 @@ export function CompletedPage({
           Tasks concluídas
         </h1>
         <span className="text-sm text-muted">
+          {filtering && `${matchTotal} no filtro · `}
           {total} de {taskTotal}
         </span>
       </header>
 
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex flex-wrap gap-1">
+          <FilterPill active={doneByMe === null} onClick={() => setDoneByMe(null)}>
+            Todas
+          </FilterPill>
+          <FilterPill active={doneByMe === true} onClick={() => setDoneByMe(true)}>
+            Já fiz
+          </FilterPill>
+          <FilterPill active={doneByMe === false} onClick={() => setDoneByMe(false)}>
+            Não fiz
+          </FilterPill>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-xs text-muted">feitas por</span>
+          <FilterPill active={doneBy === null} onClick={() => setDoneBy(null)}>
+            Qualquer um
+          </FilterPill>
+          {members.map((m) => (
+            <FilterPill key={m.id} active={doneBy === m.id} onClick={() => setDoneBy(m.id)}>
+              {m.name}
+            </FilterPill>
+          ))}
+        </div>
+
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar pelo nome…"
+          autoComplete="off"
+          className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm
+            outline-none focus:border-accent sm:ml-auto sm:w-64"
+        />
+      </div>
+
       {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
 
-      {items.length === 0 && !loading ? (
+      {items.length === 0 ? (
         <p className="text-sm text-muted">
-          O grupo ainda não concluiu nenhuma task. Elas aparecem aqui conforme forem saindo.
+          {loading
+            ? 'carregando…'
+            : filtering
+              ? 'Nenhuma task concluída com esse filtro.'
+              : 'O grupo ainda não concluiu nenhuma task. Elas aparecem aqui conforme forem saindo.'}
         </p>
       ) : (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface">
@@ -197,8 +282,8 @@ export function CompletedPage({
         </ul>
       )}
 
-      {items.length < total && (
-        <Button variant="ghost" loading={loading} onClick={() => void loadPage(items.length)}>
+      {items.length > 0 && nextOffset < matchTotal && (
+        <Button variant="ghost" loading={loading} onClick={() => void loadPage(nextOffset)}>
           Carregar mais
         </Button>
       )}

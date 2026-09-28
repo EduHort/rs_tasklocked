@@ -18,8 +18,8 @@ Cada um sorteia **a sua própria** task do pool compartilhado, faz no jogo e mar
    [Tasks extra](#tasks-extra)).
 
 **Telas:** `/board` (sua task + a extra + a do grupo) · `/completed` (o que já saiu, com o contador
-de quantas pessoas fizeram cada task e o botão de pegar extra) · `/pending` (todas as tasks que
-faltam, com busca, filtro por tier e conclusão manual).
+de quantas pessoas fizeram cada task, o botão de pegar extra, busca e filtros por "já fiz / não fiz" e
+por quem fez) · `/pending` (todas as tasks que faltam, com busca, filtro por tier e conclusão manual).
 
 Stack: React + TypeScript + Tailwind (Vite) · Supabase (Postgres) · Cloudflare Pages.
 
@@ -314,15 +314,16 @@ schema ([supabase/tests/](supabase/tests/)):
 docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=tasklocked -p 55432:5432 postgres:16-alpine
 psql ... -f supabase/schema.sql
 psql ... -f supabase/tests/rules.sql        # 48 asserções sequenciais
-psql ... -f supabase/tests/extra-tasks.sql  # 46 asserções das tasks extra
+psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool
 ```
 
 A suíte `extra-tasks.sql` cobre quem pode pegar uma extra, o limite de uma por pessoa (checando o
 erro **e** o índice único no insert cru), o contador de `/completed` subindo a cada conclusão, a
 garantia de que `assignments` e o `completed_total` não se mexem, o `completions` com nome/data/flag
-de cada pessoa, o `abandon_extra_task` (que o site não expõe, mas o banco ainda oferece) e o cascade
-quando um membro sai do grupo.
+de cada pessoa, o `abandon_extra_task` (que o site não expõe, mas o banco ainda oferece), os
+filtros da `/completed` (busca, "já fiz / não fiz" e "feitas por", combinados e paginados) e o
+cascade quando um membro sai do grupo.
 
 ### Teste manual
 
