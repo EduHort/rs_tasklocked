@@ -60,7 +60,9 @@ inválido. O front nunca decide qual task cai para quem.
 
 ### Tasks extra
 
-Uma **extra** é uma task que o grupo já concluiu e alguém escolheu repetir. Ela fica no board ao
+Uma **extra** é uma task que o grupo já concluiu e alguém repetiu — escolhida em `/completed` ou
+sorteada pelo botão **Gerar task extra** do board (`roll_extra_task`: uma concluída por outra pessoa
+que quem gerou ainda não fez; sem nenhuma, `NO_EXTRA_AVAILABLE`). Ela fica no board ao
 lado da task normal e **não mexe no pool**: não muda o tier atual, não muda o contador do grupo e
 não tira nada da lista de pendentes.
 

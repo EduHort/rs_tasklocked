@@ -399,6 +399,35 @@ select t_assert('contador cai para 2 (Bruno saiu do grupo)',
    where (x->>'task_id')::uuid = (select edu_task from fx)),
   '2');
 
+\echo '\n--- 10. roll_extra_task: extra sorteada ---'
+
+-- Estado aqui: Edu e Ana (o Bruno saiu na secao 9, e a task dele voltou ao
+-- pool). Recomeca as extras do zero. Para a Ana so ha uma candidata: edu_task
+-- (a ana_task e dela, a task ativa do Edu nao esta concluida).
+delete from extra_assignments;
+
+select t_assert('sorteia a unica concluida que ela nao fez',
+  (select roll_extra_task(token)->'task'->>'id' from tk where name = 'Ana'),
+  (select edu_task::text from fx));
+
+select t_assert('com extra ativa -> EXTRA_ALREADY_ACTIVE',
+  t_try($$select roll_extra_task((select token from tk where name='Ana'))$$),
+  'EXTRA_ALREADY_ACTIVE');
+
+select complete_extra_task(token) from tk where name = 'Ana';
+
+select t_assert('sem nada que ela nao tenha feito -> NO_EXTRA_AVAILABLE',
+  t_try($$select roll_extra_task((select token from tk where name='Ana'))$$),
+  'NO_EXTRA_AVAILABLE');
+
+select t_assert('o Edu cai na task da Ana, nunca na propria',
+  (select roll_extra_task(token)->'task'->>'id' from tk where name = 'Edu'),
+  (select ana_task::text from fx));
+
+select t_assert('token invalido -> INVALID_TOKEN',
+  t_try($$select roll_extra_task('00000000-0000-0000-0000-000000000000')$$),
+  'INVALID_TOKEN');
+
 \echo '\n=============================================='
 \echo ' TODAS AS ASSERCOES PASSARAM'
 \echo '=============================================='

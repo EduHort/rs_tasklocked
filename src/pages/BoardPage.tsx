@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
+import { Button } from '../components/Button.tsx'
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
 import { ExtraTaskCard } from '../components/ExtraTaskCard.tsx'
 import { MemberCard } from '../components/MemberCard.tsx'
 import { MyTaskCard } from '../components/MyTaskCard.tsx'
 import { TierProgressBar } from '../components/TierProgressBar.tsx'
 import { useGroupState } from '../hooks/useGroupState.ts'
-import { completeExtraTask, completeTask, rollTask } from '../lib/api.ts'
+import { completeExtraTask, completeTask, rollExtraTask, rollTask } from '../lib/api.ts'
 import type { Session } from '../lib/types.ts'
 
 export function BoardPage({
@@ -21,6 +23,7 @@ export function BoardPage({
   const { state, loading, error, refresh } = useGroupState(session.token, onAuthError)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [confirmingExtra, setConfirmingExtra] = useState(false)
 
   const me = state?.members.find((m) => m.id === state.me) ?? null
   const others = state?.members.filter((m) => m.id !== state.me) ?? []
@@ -76,13 +79,33 @@ export function BoardPage({
         onComplete={() => void run(() => completeTask(session.token))}
       />
 
-      {/* So aparece com uma extra pegue: quem quer uma escolhe em /completed. */}
-      {me?.extra && (
+      {/* Sem extra ativa, so o botao: o card inteiro so existe com uma na mao. Quem
+          quer escolher a extra a dedo usa /completed. */}
+      {me?.extra ? (
         <ExtraTaskCard
           extra={me.extra}
           busy={busy}
           onComplete={() => void run(() => completeExtraTask(session.token))}
         />
+      ) : (
+        <div className="flex justify-center">
+          <Button variant="ghost" loading={busy} onClick={() => setConfirmingExtra(true)}>
+            Gerar task extra
+          </Button>
+
+          <ConfirmDialog
+            open={confirmingExtra}
+            title="Gerar uma task extra?"
+            message="Cai uma task aleatória entre as que o grupo já concluiu e você ainda não fez. Não dá para trocar nem devolver: só sai concluindo."
+            confirmLabel="Gerar"
+            busy={busy}
+            onConfirm={() => {
+              setConfirmingExtra(false)
+              void run(() => rollExtraTask(session.token))
+            }}
+            onCancel={() => setConfirmingExtra(false)}
+          />
+        </div>
       )}
 
       <section>

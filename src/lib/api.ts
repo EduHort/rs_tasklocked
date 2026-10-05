@@ -35,6 +35,7 @@ const MESSAGES: Record<string, string> = {
   EXTRA_ALREADY_DONE: 'Você já fez essa task.',
   EXTRA_OWN_TASK: 'Essa já é a sua task principal.',
   NO_EXTRA_TASK: 'Você não tem nenhuma task extra ativa.',
+  NO_EXTRA_AVAILABLE: 'Não há nenhuma task concluída que você ainda não tenha feito.',
 }
 
 export class ApiError extends Error {
@@ -170,6 +171,15 @@ export function completeTaskById(
  */
 export function takeExtraTask(token: string, taskId: string): Promise<ActiveAssignment> {
   return call<ActiveAssignment>('take_extra_task', { p_token: token, p_task_id: taskId })
+}
+
+/**
+ * Sorteia como EXTRA uma task que o grupo ja concluiu e que voce ainda nao fez.
+ * Mesmas regras do `takeExtraTask`; so muda que quem escolhe e o banco.
+ * Falha com NO_EXTRA_AVAILABLE se nao sobrou nenhuma.
+ */
+export function rollExtraTask(token: string): Promise<ActiveAssignment> {
+  return call<ActiveAssignment>('roll_extra_task', { p_token: token })
 }
 
 /**

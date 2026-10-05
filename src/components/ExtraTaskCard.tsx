@@ -8,15 +8,16 @@ import { TierBadge } from './TierBadge.tsx'
 
 /**
  * A task EXTRA de quem esta logado: uma que o grupo JA concluiu e a pessoa
- * escolheu repetir, em /completed. Fica ao lado da task normal.
+ * repete, escolhida em /completed ou sorteada pelo "Gerar task extra" do board.
+ * Fica ao lado da task normal.
  *
  * Visualmente secundaria de proposito — a task do pool e que faz o grupo
- * avancar; a extra nao mexe no pool. Some quando nao ha extra ativa: quem pega
- * uma escolhe na tela de concluidas, entao nao ha botao "gerar" aqui.
+ * avancar; a extra nao mexe no pool. Some quando nao ha extra ativa; no lugar
+ * dela o board mostra so o botao de gerar uma.
  *
  * Concluir e a UNICA saida: nao ha como devolver. Como so cabe uma extra por
  * vez e ninguem repete a mesma task, pegar a errada tranca a pessoa — por isso
- * a confirmacao ao PEGAR (em /completed) e a mais enfatica das duas.
+ * a confirmacao ao PEGAR (em /completed ou ao gerar) e a mais enfatica das duas.
  */
 export function ExtraTaskCard({
   extra,

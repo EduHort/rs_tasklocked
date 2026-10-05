@@ -156,7 +156,7 @@ revoke all on tasks, group_state, members, assignments, extra_assignments
 --   NO_ACTIVE_TASK · TIER_LOCKED · ALL_DONE · UNDO_EXPIRED · NOT_INITIALIZED
 --   TASK_NOT_FOUND · ALREADY_COMPLETED · TASK_TAKEN
 --   NOT_COMPLETED_YET · EXTRA_ALREADY_ACTIVE · EXTRA_ALREADY_DONE · NO_EXTRA_TASK
---   EXTRA_OWN_TASK · NAME_TAKEN
+--   EXTRA_OWN_TASK · NO_EXTRA_AVAILABLE · NAME_TAKEN
 -- =============================================================================
 
 -- Resolve o token -> member_id. Toda funcao comeca por aqui: e o unico jeito
@@ -906,6 +906,69 @@ end;
 $$;
 
 -- -----------------------------------------------------------------------------
+-- roll_extra_task: sorteia como extra uma task que o grupo JA concluiu.
+--
+-- E o "Gerar task extra" do board: a pessoa nao escolhe, cai uma aleatoria entre
+-- as concluidas que ela ainda nao fez (nem no pool, nem de extra). Fica de fora
+-- a task ATIVA de outra pessoa, que o take_extra_task aceita por escolha mas que
+-- um sorteio nao deve empurrar: ela pode nao estar feita ainda.
+--
+-- Devolve o mesmo formato do take_extra_task. As regras 2 e 3 valem igual; a 4
+-- e automatica, ja que so se sorteia entre tasks concluidas.
+-- -----------------------------------------------------------------------------
+create or replace function roll_extra_task(p_token uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_task      tasks%rowtype;
+  v_extra_id  uuid;
+  v_at        timestamptz;
+begin
+  -- Regra 2. Checado aqui para dar mensagem boa; o indice unico e a garantia.
+  if exists (
+    select 1 from extra_assignments
+    where member_id = v_member_id and status = 'active'
+  ) then
+    raise exception 'EXTRA_ALREADY_ACTIVE';
+  end if;
+
+  select t.* into v_task
+  from tasks t
+  join assignments a on a.task_id = t.id and a.status = 'completed'
+  where a.member_id <> v_member_id
+    and not exists (
+      select 1 from extra_assignments e
+      where e.member_id = v_member_id and e.task_id = t.id
+    )
+  order by random()
+  limit 1;
+
+  if not found then
+    raise exception 'NO_EXTRA_AVAILABLE';
+  end if;
+
+  insert into extra_assignments (member_id, task_id)
+  values (v_member_id, v_task.id)
+  returning id, assigned_at into v_extra_id, v_at;
+
+  return json_build_object(
+    'assignment_id', v_extra_id,
+    'assigned_at',   v_at,
+    'task',          to_jsonb(v_task) - 'tier_order'
+  );
+exception
+  -- Dois cliques seguidos passam juntos pelo exists acima; o segundo bate no
+  -- indice unico da regra 2.
+  when unique_violation then
+    raise exception 'EXTRA_ALREADY_ACTIVE';
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
 -- complete_extra_task: conclui a extra ativa do dono do token.
 --
 -- Nao mexe em `assignments`: a task ja estava concluida pelo grupo e continua
@@ -1263,6 +1326,7 @@ grant execute on function list_completed(uuid, int, int, text, boolean, uuid) to
 grant execute on function complete_task_by_id(uuid, uuid) to anon, authenticated;
 grant execute on function list_pending(uuid, int, int, text, text) to anon, authenticated;
 grant execute on function take_extra_task(uuid, uuid)     to anon, authenticated;
+grant execute on function roll_extra_task(uuid)         to anon, authenticated;
 grant execute on function complete_extra_task(uuid)       to anon, authenticated;
 grant execute on function complete_extra_by_id(uuid, uuid) to anon, authenticated;
 grant execute on function abandon_extra_task(uuid)        to anon, authenticated;
