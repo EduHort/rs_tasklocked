@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
-  `rounded-md px-3 py-1.5 text-sm font-semibold transition ${
+  `whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-semibold transition ${
     isActive ? 'bg-surface-2 text-accent' : 'text-muted hover:text-ink'
   }`
 
@@ -19,7 +19,7 @@ export function AppHeader({
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
         <span className="font-bold tracking-tight">Task Locked</span>
 
-        <nav className="flex items-center gap-1">
+        <nav className="flex flex-wrap items-center gap-1">
           <NavLink to="/board" className={linkClass}>
             Tasks
           </NavLink>
@@ -28,6 +28,9 @@ export function AppHeader({
           </NavLink>
           <NavLink to="/pending" className={linkClass}>
             A fazer
+          </NavLink>
+          <NavLink to="/stats" className={linkClass}>
+            Estatísticas
           </NavLink>
         </nav>
 

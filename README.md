@@ -19,7 +19,9 @@ Cada um sorteia **a sua própria** task do pool compartilhado, faz no jogo e mar
 
 **Telas:** `/board` (sua task + a extra + a do grupo) · `/completed` (o que já saiu, com o contador
 de quantas pessoas fizeram cada task, o botão de pegar extra, busca e filtros por "já fiz / não fiz" e
-por quem fez) · `/pending` (todas as tasks que faltam, com busca, filtro por tier e conclusão manual).
+por quem fez) · `/pending` (todas as tasks que faltam, com busca, filtro por tier e conclusão manual) ·
+`/stats` (dias desde o começo, ritmo e previsão de término, ranking de quem fez mais, tasks por semana e as
+tasks que mais e menos demoraram).
 Clicar no seu nome, no topo, troca o nome — e é com o nome novo que você entra da próxima vez; o
 antigo fica livre. Os outros aparelhos logados pegam o nome novo sozinhos ao abrir o board.
 
@@ -35,7 +37,7 @@ Browser (SPA)
    ▼
 Supabase RPC   join_group · rename_member · get_state · roll_task · complete_task · undo_complete
                list_completed · list_pending · complete_task_by_id
-               take_extra_task · complete_extra_task
+               take_extra_task · complete_extra_task · get_stats
    ▼
 Postgres  tasks · group_state · members · assignments · extra_assignments
 
@@ -317,8 +319,8 @@ As duas variáveis precisam existir **no momento do build** — o Vite as injeta
 elas o site sobe e quebra ao abrir. Não coloque a `service_role` / secret key ali: ela ignora a RLS e
 só é usada pelos scripts locais.
 
-O [public/_redirects](public/_redirects) cuida do fallback de SPA para `/board`, `/completed` e
-`/pending`, e o
+O [public/_redirects](public/_redirects) cuida do fallback de SPA para `/board`, `/completed`,
+`/pending` e `/stats`, e o
 [.node-version](.node-version) fixa o Node 24 no build.
 
 > O build image v3 do Pages **ignora** o campo `engines` do `package.json` — `.node-version`,
@@ -354,6 +356,7 @@ psql ... -f supabase/schema.sql
 psql ... -f supabase/tests/rules.sql        # 62 asserções sequenciais
 psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
 psql ... -f supabase/tests/sync-tasks.sql   # 10 asserções do que o worker avisa no Discord
+psql ... -f supabase/tests/stats.sql        # 36 asserções da get_stats (tempos, fuso, semanas)
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool
 ```
 
@@ -381,7 +384,7 @@ src/
   lib/          supabase · types · api (RPCs tipadas + erros em português) · session · format
   hooks/        useGroupState — polling de 3s
   components/   MyTaskCard · ExtraTaskCard · MemberCard (read-only) · ConfirmDialog · …
-  pages/        LoginPage · BoardPage · CompletedPage · PendingPage
+  pages/        LoginPage · BoardPage · CompletedPage · PendingPage · StatsPage
 supabase/
   schema.sql    tabelas, índices, RLS e as funções — fonte da verdade, idempotente
   tests/        suítes SQL + teste de concorrência

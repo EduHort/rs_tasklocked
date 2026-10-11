@@ -8,6 +8,7 @@ import { BoardPage } from './pages/BoardPage.tsx'
 import { CompletedPage } from './pages/CompletedPage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
 import { PendingPage } from './pages/PendingPage.tsx'
+import { StatsPage } from './pages/StatsPage.tsx'
 
 export function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
@@ -70,6 +71,7 @@ export function App() {
           element={<CompletedPage session={session} onAuthError={logout} />}
         />
         <Route path="/pending" element={<PendingPage session={session} onAuthError={logout} />} />
+        <Route path="/stats" element={<StatsPage session={session} onAuthError={logout} />} />
         <Route path="*" element={<Navigate to="/board" replace />} />
       </Routes>
     </div>

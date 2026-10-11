@@ -152,6 +152,56 @@ export type PendingTaskPage = {
   items: PendingTask[]
 }
 
+/** Uma task concluida com o tempo que levou — linha dos rankings da /stats. */
+export type TimedCompletion = {
+  task_id: string
+  name: string
+  tier: Tier
+  image_link: string
+  member_name: string
+  assigned_at: string
+  completed_at: string
+  /** de pegar a task ate concluir */
+  secs: number
+  /** true = feita como extra */
+  extra: boolean
+}
+
+export type MemberStats = {
+  id: string
+  name: string
+  /** tasks que essa pessoa tirou do pool */
+  pool: number
+  /** tasks que repetiu de extra */
+  extra: number
+  total: number
+  /** null quando nao ha nenhuma task cronometrada (so registros diretos) */
+  median_secs: number | null
+}
+
+export type GroupStats = {
+  me: string
+  /** a primeira task que alguem pegou. null = o grupo ainda nao pegou nenhuma */
+  started_at: string | null
+  task_total: number
+  pool_completed: number
+  extra_completed: number
+  /** dias (no fuso de Brasilia) com pelo menos uma conclusao */
+  active_days: number
+  best_day: { day: string; count: number } | null
+  longest_streak: { days: number; first_day: string; last_day: string } | null
+  current_streak: number
+  median_secs: number | null
+  /** mais tasks feitas primeiro */
+  members: MemberStats[]
+  /** top 10. Registros diretos (sem pegar antes) ficam de fora. */
+  slowest: TimedCompletion[]
+  /** top 5 */
+  fastest: TimedCompletion[]
+  /** uma por semana, segunda a segunda, desde o comeco — inclusive as vazias */
+  weeks: { week: string; pool: number; extra: number }[]
+}
+
 export type Session = {
   memberId: string
   token: string

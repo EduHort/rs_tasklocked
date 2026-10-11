@@ -1101,6 +1101,174 @@ begin
 end;
 $$;
 
+-- =============================================================================
+-- Estatisticas
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- get_stats: os numeros da tela /stats, num payload so. So leitura.
+--
+-- "Conclusao" aqui e qualquer task feita: as do pool E as extras. Os numeros
+-- do pool (o progresso do grupo) vem separados, em `pool_completed`.
+--
+-- Tempo de uma task = de quando a pessoa a pegou ate concluir. Fica de fora
+-- quem registrou direto, sem pegar antes (complete_task_by_id e
+-- complete_extra_by_id): a linha nasce com assigned_at = completed_at, e esses
+-- zeros encheriam o ranking das mais rapidas.
+--
+-- Datas sao agrupadas no fuso do grupo, para "melhor dia" e as sequencias
+-- virarem a meia-noite de Brasilia, nao a de Greenwich.
+-- -----------------------------------------------------------------------------
+create or replace function get_stats(p_token uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_tz        text := 'America/Sao_Paulo';
+  v_today     date := (now() at time zone 'America/Sao_Paulo')::date;
+  v_started   timestamptz;
+begin
+  -- Comeco da run: a primeira task que alguem pegou. O group_state.created_at
+  -- nao serve — e de quando o `npm run set-code` rodou, antes de o grupo entrar.
+  select least(
+    (select min(assigned_at) from assignments),
+    (select min(assigned_at) from extra_assignments)
+  ) into v_started;
+
+  return (
+    with done as (
+      select a.member_id, a.task_id, a.assigned_at, a.completed_at, false as extra
+      from assignments a
+      where a.status = 'completed'
+      union all
+      select e.member_id, e.task_id, e.assigned_at, e.completed_at, true
+      from extra_assignments e
+      where e.status = 'completed'
+    ),
+    timed as (
+      select d.*, extract(epoch from d.completed_at - d.assigned_at)::bigint as secs
+      from done d
+      where d.completed_at > d.assigned_at
+    ),
+    days as (
+      select distinct (completed_at at time zone v_tz)::date as d from done
+    ),
+    -- Gaps and islands: em dias consecutivos, `d - row_number` e constante.
+    islands as (
+      select min(d) as first_day, max(d) as last_day, count(*)::int as len
+      from (select d, d - (row_number() over (order by d))::int as grp from days) x
+      group by grp
+    )
+    select json_build_object(
+      'me',         v_member_id,
+      'started_at', v_started,
+      'task_total', (select count(*)::int from tasks),
+
+      'pool_completed',  (select count(*)::int from done where not extra),
+      'extra_completed', (select count(*)::int from done where extra),
+
+      'active_days', (select count(*)::int from days),
+
+      'best_day', (
+        select json_build_object('day', b.d, 'count', b.n)
+        from (
+          select (completed_at at time zone v_tz)::date as d, count(*)::int as n
+          from done
+          group by 1
+          order by n desc, d desc
+          limit 1
+        ) b
+      ),
+
+      'longest_streak', (
+        select json_build_object('days', len, 'first_day', first_day, 'last_day', last_day)
+        from islands
+        order by len desc, last_day desc
+        limit 1
+      ),
+
+      -- Ainda vale se o ultimo dia foi ontem: o dia de hoje nao acabou.
+      'current_streak', coalesce((
+        select len from islands where last_day >= v_today - 1
+      ), 0),
+
+      'median_secs', (select percentile_cont(0.5) within group (order by secs) from timed),
+
+      'members', coalesce((
+        select json_agg(x order by x.total desc, x.pool desc, x.name)
+        from (
+          select
+            m.id,
+            m.name,
+            count(d.member_id) filter (where not d.extra)::int as pool,
+            count(d.member_id) filter (where d.extra)::int     as extra,
+            count(d.member_id)::int                            as total,
+            percentile_cont(0.5) within group (
+              order by extract(epoch from d.completed_at - d.assigned_at)
+            ) filter (where d.completed_at > d.assigned_at)    as median_secs
+          from members m
+          left join done d on d.member_id = m.id
+          group by m.id, m.name
+        ) x
+      ), '[]'::json),
+
+      'slowest', coalesce((
+        select json_agg(x order by x.secs desc)
+        from (
+          select t.id as task_id, t.name, t.tier, t.image_link,
+                 m.name as member_name, tm.assigned_at, tm.completed_at, tm.secs, tm.extra
+          from timed tm
+          join tasks t   on t.id = tm.task_id
+          join members m on m.id = tm.member_id
+          order by tm.secs desc, tm.completed_at
+          limit 10
+        ) x
+      ), '[]'::json),
+
+      'fastest', coalesce((
+        select json_agg(x order by x.secs)
+        from (
+          select t.id as task_id, t.name, t.tier, t.image_link,
+                 m.name as member_name, tm.assigned_at, tm.completed_at, tm.secs, tm.extra
+          from timed tm
+          join tasks t   on t.id = tm.task_id
+          join members m on m.id = tm.member_id
+          order by tm.secs, tm.completed_at
+          limit 5
+        ) x
+      ), '[]'::json),
+
+      -- Uma linha por semana (segunda a domingo) desde o comeco, inclusive as
+      -- semanas sem nada: o grafico precisa do buraco para mostrar a pausa.
+      'weeks', coalesce((
+        select json_agg(json_build_object(
+          'week',  w.week,
+          'pool',  coalesce(c.pool, 0),
+          'extra', coalesce(c.extra, 0)
+        ) order by w.week)
+        from (
+          select generate_series(
+            date_trunc('week', v_started at time zone v_tz),
+            date_trunc('week', now() at time zone v_tz),
+            interval '1 week'
+          )::date as week
+        ) w
+        left join (
+          select date_trunc('week', completed_at at time zone v_tz)::date as week,
+                 count(*) filter (where not extra)::int as pool,
+                 count(*) filter (where extra)::int     as extra
+          from done
+          group by 1
+        ) c on c.week = w.week
+      ), '[]'::json)
+    )
+  );
+end;
+$$;
+
 -- -----------------------------------------------------------------------------
 -- set_group_code: define/troca o codigo do grupo (guardado como hash bcrypt).
 -- Usada apenas pelo script local `npm run set-code`, com a service_role key.
@@ -1330,13 +1498,14 @@ grant execute on function roll_extra_task(uuid)         to anon, authenticated;
 grant execute on function complete_extra_task(uuid)       to anon, authenticated;
 grant execute on function complete_extra_by_id(uuid, uuid) to anon, authenticated;
 grant execute on function abandon_extra_task(uuid)        to anon, authenticated;
+grant execute on function get_stats(uuid)                 to anon, authenticated;
 
 -- Faz o PostgREST recarregar o cache na hora, em vez de esperar o proximo ciclo.
 notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 18 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 19 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
@@ -1358,5 +1527,6 @@ select
                            'take_extra_task','complete_extra_task',
                            'complete_extra_by_id',
                            'abandon_extra_task',
-                           'set_sync_secret','sync_tasks'))              as funcoes,
+                           'set_sync_secret','sync_tasks',
+                           'get_stats'))                                 as funcoes,
   (select count(*) from tasks)                                           as tasks_carregadas;

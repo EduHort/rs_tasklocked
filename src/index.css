@@ -16,6 +16,11 @@
   --color-danger: #c0503f;
   --color-ok: #6f9c4a;
 
+  /* Barras dos graficos. O `accent` e claro demais para area pintada sobre o
+     fundo escuro; este e o mesmo dourado um passo abaixo. O accent fica para o
+     hover. */
+  --color-chart: #b08e3e;
+
   --color-tier-easy: #6f9c4a;
   --color-tier-medium: #4a86b8;
   --color-tier-hard: #9a6bbf;

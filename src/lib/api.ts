@@ -3,6 +3,7 @@ import type {
   ActiveAssignment,
   CompletedPage,
   GroupState,
+  GroupStats,
   PendingTaskPage,
   Session,
   Task,
@@ -97,6 +98,11 @@ export function renameMember(token: string, name: string): Promise<string> {
 
 export function getState(token: string): Promise<GroupState> {
   return call<GroupState>('get_state', { p_token: token })
+}
+
+/** Os numeros da tela /stats. So leitura. */
+export function getStats(token: string): Promise<GroupStats> {
+  return call<GroupStats>('get_stats', { p_token: token })
 }
 
 /** Sorteia uma task para o dono do token — e so para ele. */
