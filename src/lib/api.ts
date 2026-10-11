@@ -4,8 +4,8 @@ import type {
   CompletedPage,
   GroupState,
   GroupStats,
+  JoinResult,
   PendingTaskPage,
-  Session,
   Task,
   Tier,
 } from './types.ts'
@@ -78,11 +78,31 @@ async function call<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   return data as T
 }
 
-export function joinGroup(code: string, name: string): Promise<Session> {
-  return call<{ member_id: string; token: string; name: string }>('join_group', {
+/**
+ * Entra no grupo. Com `create: false`, um nome que ainda nao existe NAO cria a
+ * conta: volta `{ status: 'new' }` com quem ja esta no grupo, para a tela
+ * confirmar antes. Nome que ja existe entra direto nos dois casos.
+ */
+export function joinGroup(
+  code: string,
+  name: string,
+  { create }: { create: boolean },
+): Promise<JoinResult> {
+  return call<
+    | { member_id: string; token: string; name: string; new_member?: undefined }
+    | { new_member: true; members: string[] }
+  >('join_group', {
     p_code: code,
     p_name: name,
-  }).then((row) => ({ memberId: row.member_id, token: row.token, name: row.name }))
+    p_create: create,
+  }).then((row) =>
+    row.new_member
+      ? { status: 'new', members: row.members }
+      : {
+          status: 'joined',
+          session: { memberId: row.member_id, token: row.token, name: row.name },
+        },
+  )
 }
 
 /**

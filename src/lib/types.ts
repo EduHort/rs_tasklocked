@@ -208,6 +208,15 @@ export type Session = {
   name: string
 }
 
+/** Resposta do login: entrou, ou o nome e novo e a conta ainda nao foi criada. */
+export type JoinResult =
+  | { status: 'joined'; session: Session }
+  | {
+      status: 'new'
+      /** quem ja esta no grupo, em ordem de entrada */
+      members: string[]
+    }
+
 export const TIER_LABEL: Record<Tier, string> = {
   easy: 'Easy',
   medium: 'Medium',

@@ -22,6 +22,8 @@ de quantas pessoas fizeram cada task, o botão de pegar extra, busca e filtros p
 por quem fez) · `/pending` (todas as tasks que faltam, com busca, filtro por tier e conclusão manual) ·
 `/stats` (dias desde o começo, ritmo e previsão de término, ranking de quem fez mais, tasks por semana e as
 tasks que mais e menos demoraram).
+No login, um nome que ainda não existe no grupo não vira conta direto: a tela pergunta antes,
+mostrando quem já está no grupo — um espaço a mais ("y G" em vez de "yG") criaria outra pessoa.
 Clicar no seu nome, no topo, troca o nome — e é com o nome novo que você entra da próxima vez; o
 antigo fica livre. Os outros aparelhos logados pegam o nome novo sozinhos ao abrir o board.
 

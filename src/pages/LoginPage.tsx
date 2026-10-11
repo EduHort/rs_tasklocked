@@ -1,33 +1,61 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '../components/Button.tsx'
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx'
 import { ErrorBanner } from '../components/ErrorBanner.tsx'
 import { joinGroup } from '../lib/api.ts'
 import { saveSession } from '../lib/session.ts'
 import type { Session } from '../lib/types.ts'
 
+/**
+ * Login pelo codigo do grupo + nome. O nome e a conta: digitar diferente
+ * ("y G" em vez de "yG") cria outra pessoa. Por isso o primeiro envio nunca
+ * cria conta — se o nome e novo, a tela pergunta antes, mostrando quem ja esta
+ * no grupo, e so o "Criar conta" cria de fato.
+ */
 export function LoginPage({ onLogin }: { onLogin: (session: Session) => void }) {
   const [code, setCode] = useState('')
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** nome novo esperando confirmacao: quem ja esta no grupo */
+  const [newMember, setNewMember] = useState<{ members: string[] } | null>(null)
+  const nameInput = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault()
+  async function join(create: boolean) {
     setBusy(true)
     setError(null)
     try {
-      const session = await joinGroup(code.trim(), name.trim())
-      saveSession(session)
-      onLogin(session)
+      const result = await joinGroup(code.trim(), name.trim(), { create })
+      if (result.status === 'new') {
+        setNewMember({ members: result.members })
+        return
+      }
+      saveSession(result.session)
+      onLogin(result.session)
       navigate('/board')
     } catch (err) {
+      setNewMember(null)
       setError(err instanceof Error ? err.message : 'Não foi possível entrar.')
     } finally {
       setBusy(false)
     }
   }
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault()
+    void join(false)
+  }
+
+  // Cancelou: o mais provavel e que o nome esteja errado, entao volta pra ele.
+  const cancelNew = useCallback(() => {
+    setNewMember(null)
+    nameInput.current?.focus()
+    nameInput.current?.select()
+  }, [])
+
+  const others = newMember?.members ?? []
 
   return (
     <main className="mx-auto flex min-h-full max-w-md flex-col justify-center gap-6 px-5 py-12">
@@ -61,6 +89,7 @@ export function LoginPage({ onLogin }: { onLogin: (session: Session) => void }) 
             Seu nome no grupo
           </span>
           <input
+            ref={nameInput}
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
@@ -81,6 +110,20 @@ export function LoginPage({ onLogin }: { onLogin: (session: Session) => void }) 
           Entrar
         </Button>
       </form>
+
+      <ConfirmDialog
+        open={newMember !== null}
+        title="Criar uma conta nova?"
+        message={
+          others.length > 0
+            ? `Ninguém no grupo usa o nome “${name.trim()}”. Já estão no grupo: ${others.join(', ')}. Se um desses é você, cancele e digite o nome igual — senão você entra numa conta nova, do zero.`
+            : `Ninguém entrou no grupo ainda. Você vai ser a primeira pessoa, com o nome “${name.trim()}”.`
+        }
+        confirmLabel="Criar conta"
+        busy={busy}
+        onConfirm={() => void join(true)}
+        onCancel={cancelNew}
+      />
     </main>
   )
 }

@@ -28,7 +28,20 @@ select t_assert('codigo errado -> INVALID_CODE',
 select t_assert('nome vazio -> INVALID_NAME',
   t_try($$select join_group('TESTE1','   ')$$), 'INVALID_NAME');
 
+-- p_create = false: nome novo so pergunta, nao cria.
+select t_assert('nome novo sem p_create -> new_member',
+  (select join_group('TESTE1','Edu', false)->>'new_member'), 'true');
+select t_assert('... sem token',
+  (select join_group('TESTE1','Edu', false)->>'token'), null);
+select t_assert('... e nao criou ninguem', (select count(*)::text from members), '0');
+select t_assert('grupo vazio -> lista de membros vazia',
+  (select join_group('TESTE1','Edu', false)->>'members'), '[]');
+select t_assert('codigo errado continua INVALID_CODE com p_create false',
+  t_try($$select join_group('ERRADO','x', false)$$), 'INVALID_CODE');
+
 select join_group('TESTE1','Edu')   as j \gset j_
+select t_assert('nome novo lista quem ja esta no grupo',
+  (select join_group('TESTE1','Ana', false)->>'members'), '["Edu"]');
 select join_group('TESTE1','Ana')   as j \gset a_
 select join_group('TESTE1','Bruno') as j \gset b_
 select join_group('TESTE1','Caio')  as j \gset c_
@@ -42,6 +55,11 @@ select t_assert('mesmo nome retoma o membro (nao cria novo)',
 select t_assert('"edu" minusculo == "Edu"',
   ((select join_group('TESTE1','edu')->>'member_id') =
    (select id::text from members where name_key='edu'))::text, 'true');
+select t_assert('nome existente com p_create false entra direto',
+  ((select join_group('TESTE1','edu', false)->>'token') =
+   (select token::text from members where name_key='edu'))::text, 'true');
+select t_assert('grupo cheio: GROUP_FULL antes de perguntar',
+  t_try($$select join_group('TESTE1','Extra', false)$$), 'GROUP_FULL');
 
 -- guarda os tokens numa tabela auxiliar para o resto do teste
 create temp table tk as

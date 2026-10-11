@@ -212,8 +212,20 @@ $$;
 -- join_group: valida o codigo do grupo e devolve/cria o membro.
 -- Se o nome ja existe, RETOMA aquele membro (quem limpou o localStorage volta
 -- com o mesmo nome; o codigo do grupo ja e a senha).
+--
+-- p_create = false: nome novo NAO cria ninguem. Devolve
+-- { new_member: true, members: [nomes de quem ja esta no grupo] }, sem token,
+-- para o login perguntar antes. Existe porque um nome digitado errado ("y G"
+-- em vez de "yG") virava uma conta nova sem aviso. O padrao continua `true`:
+-- quem chama com dois argumentos (scripts, testes, o front antigo no
+-- intervalo do deploy) segue criando direto, como sempre.
 -- -----------------------------------------------------------------------------
-create or replace function join_group(p_code text, p_name text)
+
+-- A assinatura ganhou um parametro: sem o drop, o `create or replace` criaria
+-- uma sobrecarga ao lado da antiga, e a chamada com 2 argumentos ficaria ambigua.
+drop function if exists join_group(text, text);
+
+create or replace function join_group(p_code text, p_name text, p_create boolean default true)
 returns json
 language plpgsql
 security definer
@@ -245,6 +257,18 @@ begin
     select count(*) into v_count from members;
     if v_count >= v_group.max_members then
       raise exception 'GROUP_FULL';
+    end if;
+
+    -- Depois do GROUP_FULL de proposito: nao adianta confirmar uma conta que
+    -- nao vai caber.
+    if not coalesce(p_create, true) then
+      return json_build_object(
+        'new_member', true,
+        'members', coalesce(
+          (select json_agg(name order by created_at) from members),
+          '[]'::json
+        )
+      );
     end if;
 
     insert into members (name, name_key)
@@ -1484,7 +1508,7 @@ grant execute on function set_sync_secret(text) to service_role;
 
 grant execute on function sync_tasks(text, jsonb) to anon, authenticated;
 
-grant execute on function join_group(text, text)          to anon, authenticated;
+grant execute on function join_group(text, text, boolean) to anon, authenticated;
 grant execute on function rename_member(uuid, text)       to anon, authenticated;
 grant execute on function get_state(uuid)                 to anon, authenticated;
 grant execute on function roll_task(uuid)                 to anon, authenticated;
