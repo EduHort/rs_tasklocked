@@ -79,8 +79,10 @@ export function BoardPage({
           `h-0` para nao empurrar o board; o popup flutua por cima dele. */}
       {me?.active && receivedSwaps.length > 0 && (
         <div className="pointer-events-none sticky top-0 z-40 h-0">
-          <div className="mx-auto flex max-w-5xl justify-end px-5">
-            <div className="mt-3 flex w-full max-w-sm flex-col gap-2">
+          {/* Na borda da tela, e nao da coluna do board: la ele ficava em cima
+              do card da sua task. */}
+          <div className="flex justify-end px-4">
+            <div className="mt-3 flex w-full max-w-xs flex-col gap-2">
               {receivedSwaps.map((request) => {
                 const from = others.find((m) => m.id === request.from_member_id)
                 if (!from?.active) return null
