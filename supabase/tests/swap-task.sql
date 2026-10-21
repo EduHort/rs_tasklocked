@@ -147,10 +147,11 @@ select t_assert('Edu pode pedir de novo', t_ask('Edu', 'Ana'), 'OK');
 
 \echo '\n--- 5. aceitar ---'
 
--- Recua o relogio para ver o assigned_at recomecar. Caio pede a Ana tambem:
+-- Relogios diferentes para ver cada task levar o seu. Caio pede a Ana tambem:
 -- quando ela aceitar o Edu, o pedido do Caio aponta para uma task que ela nao
 -- tem mais e precisa sumir.
-update assignments set assigned_at = now() - interval '2 days' where status = 'active';
+update assignments set assigned_at = now() - interval '2 days' where id = (select edu_asg from fx);
+update assignments set assigned_at = now() - interval '5 days' where id = (select ana_asg from fx);
 select t_ask('Caio', 'Ana');
 
 select t_assert('Ana aceita e recebe a task do Edu',
@@ -160,10 +161,15 @@ select t_assert('Ana aceita e recebe a task do Edu',
 select t_assert('Edu ficou com a task da Ana',
   t_task('Edu')::text, (select ana_task::text from fx));
 
-select t_assert('relogio recomecou para os dois',
-  (select count(*) from assignments
-   where status = 'active' and assigned_at > now() - interval '1 minute')::text,
-  '2');
+select t_assert('a task da Ana levou o relogio dela (5 dias)',
+  (select date_trunc('hour', now() - assigned_at)::text from assignments
+   where task_id = (select ana_task from fx)),
+  '5 days');
+
+select t_assert('a task do Edu levou o relogio dele (2 dias)',
+  (select date_trunc('hour', now() - assigned_at)::text from assignments
+   where task_id = (select edu_task from fx)),
+  '2 days');
 
 select t_assert('continuam 3 assignments, todos ativos',
   (select count(*) || '/' || count(*) filter (where status = 'active') from assignments),

@@ -21,8 +21,8 @@ Cada um sorteia **a sua própria** task do pool compartilhado, faz no jogo e mar
    vê um popup no canto do board, logo abaixo da topbar, e **aceita** ou **recusa**
    (`accept_swap` / `decline_swap`). Quem pediu pode cancelar enquanto espera (`cancel_swap`). O
    pedido some sozinho se uma das duas tasks for concluída antes da resposta. Um pedido enviado por
-   vez; o pool não muda, o tempo das duas recomeça do zero na troca, e ninguém recebe uma task que já
-   fez ou está fazendo de extra.
+   vez; o pool não muda, cada task leva o seu "pegou há" para quem a recebe, e ninguém recebe uma
+   task que já fez ou está fazendo de extra.
 
 **Telas:** `/board` (sua task + a extra + a do grupo) · `/completed` (o que já saiu, com o contador
 de quantas pessoas fizeram cada task, o botão de pegar extra, busca e filtros por "já fiz / não fiz" e
@@ -367,7 +367,7 @@ psql ... -f supabase/tests/rules.sql        # 62 asserções sequenciais
 psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
 psql ... -f supabase/tests/sync-tasks.sql   # 10 asserções do que o worker avisa no Discord
 psql ... -f supabase/tests/stats.sql        # 36 asserções da get_stats (tempos, fuso, semanas)
-psql ... -f supabase/tests/swap-task.sql    # 39 asserções da troca de tasks (pedir, aceitar, recusar)
+psql ... -f supabase/tests/swap-task.sql    # 40 asserções da troca de tasks (pedir, aceitar, recusar)
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool
 ```
 

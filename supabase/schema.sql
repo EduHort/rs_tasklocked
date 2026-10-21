@@ -988,8 +988,9 @@ $$;
 -- -----------------------------------------------------------------------------
 -- accept_swap: aceita um pedido recebido e faz a troca.
 --
--- O relogio recomeca para os dois (assigned_at = now()): a /stats mede quanto
--- cada um levou na task que recebeu, nao quanto o outro ficou com ela.
+-- Cada task leva o proprio assigned_at: o "pegou ha" do board nao zera na
+-- troca. A /stats, entao, conta para quem concluir o tempo desde que a task foi
+-- pega pela primeira pessoa, nao desde a troca.
 --
 -- Devolve a task que quem aceitou recebeu.
 -- -----------------------------------------------------------------------------
@@ -1053,9 +1054,9 @@ begin
   -- junto este pedido e qualquer outro que apontasse para as duas tasks.
   delete from assignments where id in (v_mine.id, v_theirs.id);
 
-  insert into assignments (member_id, task_id)
-  values (v_member_id, v_theirs.task_id),
-         (v_theirs.member_id, v_mine.task_id);
+  insert into assignments (member_id, task_id, assigned_at)
+  values (v_member_id, v_theirs.task_id, v_theirs.assigned_at),
+         (v_theirs.member_id, v_mine.task_id, v_mine.assigned_at);
 
   select * into v_task from tasks where id = v_theirs.task_id;
   return (to_jsonb(v_task) - 'tier_order')::json;

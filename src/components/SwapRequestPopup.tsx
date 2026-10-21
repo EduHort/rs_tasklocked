@@ -53,7 +53,6 @@ export function SwapRequestPopup({
       <p className="mt-2 truncate text-xs text-muted" title={myTask.name}>
         e {fromName} fica com a sua: <span className="text-ink">{myTask.name}</span>
       </p>
-      <p className="mt-1 text-xs text-muted">O tempo das duas recomeça do zero.</p>
 
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" disabled={busy} onClick={onDecline}>
