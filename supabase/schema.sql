@@ -135,6 +135,31 @@ create index if not exists extra_assignments_task_idx
   on extra_assignments (task_id) where status = 'completed';
 
 -- -----------------------------------------------------------------------------
+-- Pedidos de troca de task ativa entre dois membros (ver request_swap).
+--
+-- Uma linha = um pedido ESPERANDO resposta. Aceitar, recusar e cancelar apagam
+-- a linha: nao fica historico. Ela aponta para os dois assignments que estavam
+-- ativos no pedido, e so vale enquanto os dois continuam ativos — se alguem
+-- concluir no meio, o pedido morre: o get_state para de mostra-lo e o proximo
+-- request_swap o apaga. O `on delete cascade` dos assignments cobre a troca em
+-- si (que recria as duas linhas) e o dos members, quem sai do grupo.
+-- -----------------------------------------------------------------------------
+
+create table if not exists swap_requests (
+  id                 uuid primary key default gen_random_uuid(),
+  from_member_id     uuid not null references members(id) on delete cascade,
+  to_member_id       uuid not null references members(id) on delete cascade,
+  from_assignment_id uuid not null references assignments(id) on delete cascade,
+  to_assignment_id   uuid not null references assignments(id) on delete cascade,
+  created_at         timestamptz not null default now(),
+  check (from_member_id <> to_member_id)
+);
+
+-- No maximo UM pedido enviado por membro. Recebidos podem ser varios.
+create unique index if not exists swap_requests_one_per_member
+  on swap_requests (from_member_id);
+
+-- -----------------------------------------------------------------------------
 -- Seguranca: RLS ligada SEM nenhuma policy => acesso direto negado para todos.
 -- Todo acesso passa pelas funcoes security definer abaixo.
 -- -----------------------------------------------------------------------------
@@ -144,8 +169,9 @@ alter table group_state       enable row level security;
 alter table members           enable row level security;
 alter table assignments       enable row level security;
 alter table extra_assignments enable row level security;
+alter table swap_requests     enable row level security;
 
-revoke all on tasks, group_state, members, assignments, extra_assignments
+revoke all on tasks, group_state, members, assignments, extra_assignments, swap_requests
   from anon, authenticated;
 
 -- =============================================================================
@@ -156,7 +182,8 @@ revoke all on tasks, group_state, members, assignments, extra_assignments
 --   NO_ACTIVE_TASK · TIER_LOCKED · ALL_DONE · UNDO_EXPIRED · NOT_INITIALIZED
 --   TASK_NOT_FOUND · ALREADY_COMPLETED · TASK_TAKEN
 --   NOT_COMPLETED_YET · EXTRA_ALREADY_ACTIVE · EXTRA_ALREADY_DONE · NO_EXTRA_TASK
---   EXTRA_OWN_TASK · NO_EXTRA_AVAILABLE · NAME_TAKEN
+--   EXTRA_OWN_TASK · NO_EXTRA_AVAILABLE · NAME_TAKEN · SWAP_STALE
+--   SWAP_EXTRA_CONFLICT · SWAP_ALREADY_REQUESTED · SWAP_INCOMING · SWAP_NOT_FOUND
 -- =============================================================================
 
 -- Resolve o token -> member_id. Toda funcao comeca por aqui: e o unico jeito
@@ -183,6 +210,19 @@ begin
   update members set last_seen_at = now() where id = v_member_id;
   return v_member_id;
 end;
+$$;
+
+-- Um pedido de troca so vale enquanto as duas tasks dele continuam ativas.
+create or replace function swap_request_alive(p_from_assignment_id uuid, p_to_assignment_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select count(*) = 2
+  from assignments
+  where id in (p_from_assignment_id, p_to_assignment_id) and status = 'active';
 $$;
 
 -- Tier atual do grupo = menor tier_order que ainda tem task nao concluida.
@@ -387,6 +427,21 @@ begin
         left join assignments a on a.task_id = t.id
         group by t.tier, t.tier_order
       ) p
+    ), '[]'::json),
+
+    -- Pedidos de troca vivos que envolvem quem esta olhando: o que mandou e os
+    -- que recebeu. As tasks nao vem aqui: um pedido vivo e sempre entre as
+    -- tasks ativas que `members` ja traz.
+    'swap_requests', coalesce((
+      select json_agg(json_build_object(
+        'id',             r.id,
+        'from_member_id', r.from_member_id,
+        'to_member_id',   r.to_member_id,
+        'created_at',     r.created_at
+      ) order by r.created_at)
+      from swap_requests r
+      where v_member_id in (r.from_member_id, r.to_member_id)
+        and swap_request_alive(r.from_assignment_id, r.to_assignment_id)
     ), '[]'::json),
 
     -- Continua sendo so o pool: as extras nao entram no total.
@@ -828,6 +883,232 @@ begin
   where id = v_assignment.id;
 
   return json_build_object('assignment_id', v_assignment.id);
+end;
+$$;
+
+-- =============================================================================
+-- Troca de task ativa entre dois membros
+--
+-- Uma pessoa PEDE (request_swap) e a outra ACEITA (accept_swap) ou RECUSA
+-- (decline_swap); quem pediu pode desistir (cancel_swap). A task de ninguem
+-- muda sem que a propria pessoa clique em aceitar — a regra 1 continua valendo:
+-- cada funcao so age em nome do dono do token.
+--
+-- Regras:
+--   1. Os dois precisam estar com task ativa. Nao da para tomar a task de
+--      alguem sem dar a sua, nem empurrar a sua para quem esta sem nenhuma.
+--   2. O pedido vale para as tasks que estavam ativas quando foi feito. Se uma
+--      delas for concluida (ou trocada com outra pessoa), o pedido morre.
+--   3. No maximo UM pedido enviado por vez; recebidos podem ser varios.
+--   4. Regra 3 das extras: ninguem recebe uma task que ja fez de extra, ou que
+--      esta com ela de extra agora -> SWAP_EXTRA_CONFLICT.
+--
+-- O pool nao muda: as mesmas duas tasks continuam ativas, so trocam de dono.
+-- =============================================================================
+
+-- A primeira versao trocava na hora, sem a outra pessoa aceitar.
+drop function if exists swap_task(uuid, uuid, uuid);
+
+-- -----------------------------------------------------------------------------
+-- request_swap: pede para trocar a sua task ativa pela de outro membro.
+--
+-- Recebe os DOIS assignment_ids que a tela mostrava, nao o member_id: se um dos
+-- dois concluiu, ou trocou com outra pessoa, o pedido seria por uma task que
+-- ninguem viu. Qualquer diferenca -> SWAP_STALE.
+-- -----------------------------------------------------------------------------
+create or replace function request_swap(
+  p_token               uuid,
+  p_my_assignment_id    uuid,
+  p_their_assignment_id uuid
+)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id  uuid := auth_member(p_token);
+  v_mine       assignments%rowtype;
+  v_theirs     assignments%rowtype;
+  v_request_id uuid;
+begin
+  -- Serializa com o accept_swap: ninguem pede em cima de uma troca no meio.
+  perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
+
+  -- Faxina dos pedidos mortos (regra 2). Fica aqui porque e o unico lugar em
+  -- que um pedido morto atrapalha: ele ainda ocuparia o indice da regra 3.
+  delete from swap_requests
+  where not swap_request_alive(from_assignment_id, to_assignment_id);
+
+  select * into v_mine
+  from assignments
+  where member_id = v_member_id and status = 'active';
+
+  if not found then
+    raise exception 'NO_ACTIVE_TASK';
+  end if;
+
+  select * into v_theirs
+  from assignments
+  where id = p_their_assignment_id and status = 'active' and member_id <> v_member_id;
+
+  if not found or v_mine.id is distinct from p_my_assignment_id then
+    raise exception 'SWAP_STALE';
+  end if;
+
+  -- A outra pessoa ja pediu exatamente esta troca: e so aceitar.
+  if exists (
+    select 1 from swap_requests
+    where from_member_id = v_theirs.member_id and to_member_id = v_member_id
+  ) then
+    raise exception 'SWAP_INCOMING';
+  end if;
+
+  if exists (
+    select 1 from extra_assignments
+    where (member_id = v_member_id        and task_id = v_theirs.task_id)
+       or (member_id = v_theirs.member_id and task_id = v_mine.task_id)
+  ) then
+    raise exception 'SWAP_EXTRA_CONFLICT';
+  end if;
+
+  -- Regra 3. Checado aqui para dar mensagem boa; o indice unico e a garantia.
+  if exists (select 1 from swap_requests where from_member_id = v_member_id) then
+    raise exception 'SWAP_ALREADY_REQUESTED';
+  end if;
+
+  insert into swap_requests (from_member_id, to_member_id, from_assignment_id, to_assignment_id)
+  values (v_member_id, v_theirs.member_id, v_mine.id, v_theirs.id)
+  returning id into v_request_id;
+
+  return json_build_object('request_id', v_request_id);
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- accept_swap: aceita um pedido recebido e faz a troca.
+--
+-- O relogio recomeca para os dois (assigned_at = now()): a /stats mede quanto
+-- cada um levou na task que recebeu, nao quanto o outro ficou com ela.
+--
+-- Devolve a task que quem aceitou recebeu.
+-- -----------------------------------------------------------------------------
+create or replace function accept_swap(p_token uuid, p_request_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id uuid := auth_member(p_token);
+  v_request   swap_requests%rowtype;
+  v_mine      assignments%rowtype;
+  v_theirs    assignments%rowtype;
+  v_task      tasks%rowtype;
+begin
+  -- Mesmo lock do roll_task: ninguem sorteia nem conclui por id no meio da
+  -- troca, quando as duas linhas estao apagadas e as tasks parecem livres.
+  perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
+
+  -- `for update`: se quem pediu cancelar enquanto isto espera, a linha some e
+  -- cai no SWAP_NOT_FOUND.
+  select * into v_request
+  from swap_requests
+  where id = p_request_id and to_member_id = v_member_id
+  for update;
+
+  if not found then
+    raise exception 'SWAP_NOT_FOUND';
+  end if;
+
+  -- `for update` de novo: o complete_task nao pega o advisory lock. Se alguem
+  -- concluir enquanto isto espera, a linha relida ja vem `completed` e cai no
+  -- SWAP_STALE em vez de a troca apagar uma conclusao.
+  select * into v_mine
+  from assignments
+  where id = v_request.to_assignment_id and status = 'active'
+  for update;
+
+  select * into v_theirs
+  from assignments
+  where id = v_request.from_assignment_id and status = 'active'
+  for update;
+
+  if v_mine.id is null or v_theirs.id is null then
+    raise exception 'SWAP_STALE';
+  end if;
+
+  -- As extras podem ter mudado desde o pedido.
+  if exists (
+    select 1 from extra_assignments
+    where (member_id = v_member_id        and task_id = v_theirs.task_id)
+       or (member_id = v_theirs.member_id and task_id = v_mine.task_id)
+  ) then
+    raise exception 'SWAP_EXTRA_CONFLICT';
+  end if;
+
+  -- Apaga e recria em vez de um update: os dois indices unicos de `assignments`
+  -- nao sao deferrable, e trocar task_id (ou member_id) entre duas linhas ativas
+  -- bate neles no meio do update, antes de a segunda linha mudar. O cascade leva
+  -- junto este pedido e qualquer outro que apontasse para as duas tasks.
+  delete from assignments where id in (v_mine.id, v_theirs.id);
+
+  insert into assignments (member_id, task_id)
+  values (v_member_id, v_theirs.task_id),
+         (v_theirs.member_id, v_mine.task_id);
+
+  select * into v_task from tasks where id = v_theirs.task_id;
+  return (to_jsonb(v_task) - 'tier_order')::json;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- decline_swap: recusa um pedido recebido. Nada muda alem de o pedido sumir.
+-- -----------------------------------------------------------------------------
+create or replace function decline_swap(p_token uuid, p_request_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id  uuid := auth_member(p_token);
+  v_request_id uuid;
+begin
+  delete from swap_requests
+  where id = p_request_id and to_member_id = v_member_id
+  returning id into v_request_id;
+
+  if v_request_id is null then
+    raise exception 'SWAP_NOT_FOUND';
+  end if;
+
+  return json_build_object('request_id', v_request_id);
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- cancel_swap: desiste do pedido que enviou. Nao precisa de id: so ha um (regra 3).
+-- -----------------------------------------------------------------------------
+create or replace function cancel_swap(p_token uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_member_id  uuid := auth_member(p_token);
+  v_request_id uuid;
+begin
+  delete from swap_requests
+  where from_member_id = v_member_id
+  returning id into v_request_id;
+
+  if v_request_id is null then
+    raise exception 'SWAP_NOT_FOUND';
+  end if;
+
+  return json_build_object('request_id', v_request_id);
 end;
 $$;
 
@@ -1492,7 +1773,7 @@ $$;
 
 -- -----------------------------------------------------------------------------
 -- Permissoes: o anon so pode executar as RPCs publicas.
--- auth_member, current_tier_order, set_group_code e set_sync_secret sao
+-- auth_member, current_tier_order, swap_request_alive, set_group_code e set_sync_secret sao
 -- internas (nao expostas ao PostgREST para o anon).
 --
 -- `sync_tasks` e a excecao que confirma a regra: ela E concedida ao anon, mas
@@ -1501,6 +1782,7 @@ $$;
 
 revoke all on function auth_member(uuid)      from anon, authenticated, public;
 revoke all on function current_tier_order()   from anon, authenticated, public;
+revoke all on function swap_request_alive(uuid, uuid) from anon, authenticated, public;
 revoke all on function set_group_code(text)   from anon, authenticated, public;
 revoke all on function set_sync_secret(text)  from anon, authenticated, public;
 grant execute on function set_group_code(text)  to service_role;
@@ -1516,6 +1798,10 @@ grant execute on function complete_task(uuid)             to anon, authenticated
 grant execute on function undo_complete(uuid)             to anon, authenticated;
 grant execute on function list_completed(uuid, int, int, text, boolean, uuid) to anon, authenticated;
 grant execute on function complete_task_by_id(uuid, uuid) to anon, authenticated;
+grant execute on function request_swap(uuid, uuid, uuid)  to anon, authenticated;
+grant execute on function accept_swap(uuid, uuid)         to anon, authenticated;
+grant execute on function decline_swap(uuid, uuid)        to anon, authenticated;
+grant execute on function cancel_swap(uuid)               to anon, authenticated;
 grant execute on function list_pending(uuid, int, int, text, text) to anon, authenticated;
 grant execute on function take_extra_task(uuid, uuid)     to anon, authenticated;
 grant execute on function roll_extra_task(uuid)         to anon, authenticated;
@@ -1529,19 +1815,20 @@ notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 5 tabelas, 4 indices unicos, 19 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 6 tabelas, 5 indices unicos, 24 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
     where table_schema = 'public'
       and table_name in ('tasks','members','assignments','group_state',
-                         'extra_assignments'))                           as tabelas,
+                         'extra_assignments','swap_requests'))           as tabelas,
   (select count(*) from pg_indexes
     where schemaname = 'public'
       and indexname in ('assignments_one_active_per_member',
                         'assignments_task_unique',
                         'extra_assignments_one_active_per_member',
-                        'extra_assignments_member_task_unique'))         as indices_unicos,
+                        'extra_assignments_member_task_unique',
+                        'swap_requests_one_per_member'))                 as indices_unicos,
   (select count(*) from information_schema.routines
     where routine_schema = 'public'
       and routine_name in ('join_group','rename_member','get_state','roll_task','complete_task',
@@ -1551,6 +1838,8 @@ select
                            'take_extra_task','complete_extra_task',
                            'complete_extra_by_id',
                            'abandon_extra_task',
+                           'swap_request_alive','request_swap','accept_swap',
+                           'decline_swap','cancel_swap',
                            'set_sync_secret','sync_tasks',
                            'get_stats'))                                 as funcoes,
   (select count(*) from tasks)                                           as tasks_carregadas;

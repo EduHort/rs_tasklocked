@@ -16,6 +16,13 @@ Cada um sorteia **a sua própria** task do pool compartilhado, faz no jogo e mar
 5. Além da sua task do pool, cada um pode pegar **uma task extra**: uma que o grupo já concluiu,
    escolhida em `/completed`, para repetir. A extra não mexe no pool (ver
    [Tasks extra](#tasks-extra)).
+6. Duas pessoas com task ativa podem **trocar** entre si, se as duas quiserem. O botão **Trocar**,
+   no canto do card de outro membro no board, manda um **pedido** (`request_swap`); a outra pessoa
+   vê um popup no canto do board, logo abaixo da topbar, e **aceita** ou **recusa**
+   (`accept_swap` / `decline_swap`). Quem pediu pode cancelar enquanto espera (`cancel_swap`). O
+   pedido some sozinho se uma das duas tasks for concluída antes da resposta. Um pedido enviado por
+   vez; o pool não muda, o tempo das duas recomeça do zero na troca, e ninguém recebe uma task que já
+   fez ou está fazendo de extra.
 
 **Telas:** `/board` (sua task + a extra + a do grupo) · `/completed` (o que já saiu, com o contador
 de quantas pessoas fizeram cada task, o botão de pegar extra, busca e filtros por "já fiz / não fiz" e
@@ -39,9 +46,10 @@ Browser (SPA)
    ▼
 Supabase RPC   join_group · rename_member · get_state · roll_task · complete_task · undo_complete
                list_completed · list_pending · complete_task_by_id
+               request_swap · accept_swap · decline_swap · cancel_swap
                take_extra_task · complete_extra_task · get_stats
    ▼
-Postgres  tasks · group_state · members · assignments · extra_assignments
+Postgres  tasks · group_state · members · assignments · extra_assignments · swap_requests
 
                abandon_extra_task — existe, mas nenhuma tela chama:
                é válvula manual pelo SQL Editor (ver Tasks extra)
@@ -359,6 +367,7 @@ psql ... -f supabase/tests/rules.sql        # 62 asserções sequenciais
 psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
 psql ... -f supabase/tests/sync-tasks.sql   # 10 asserções do que o worker avisa no Discord
 psql ... -f supabase/tests/stats.sql        # 36 asserções da get_stats (tempos, fuso, semanas)
+psql ... -f supabase/tests/swap-task.sql    # 39 asserções da troca de tasks (pedir, aceitar, recusar)
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool
 ```
 

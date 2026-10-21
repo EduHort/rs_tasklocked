@@ -37,6 +37,13 @@ const MESSAGES: Record<string, string> = {
   EXTRA_OWN_TASK: 'Essa já é a sua task principal.',
   NO_EXTRA_TASK: 'Você não tem nenhuma task extra ativa.',
   NO_EXTRA_AVAILABLE: 'Não há nenhuma task concluída que você ainda não tenha feito.',
+  SWAP_STALE: 'A task de um de vocês mudou desde o pedido. Confira o board e tente de novo.',
+  SWAP_EXTRA_CONFLICT:
+    'Não dá para trocar: um de vocês já fez a task do outro como extra, ou está com ela de extra agora.',
+  SWAP_ALREADY_REQUESTED:
+    'Você já tem um pedido de troca esperando resposta. Cancele ele antes de pedir outro.',
+  SWAP_INCOMING: 'Essa pessoa já pediu para trocar com você. Responda o pedido dela.',
+  SWAP_NOT_FOUND: 'Esse pedido de troca não existe mais.',
 }
 
 export class ApiError extends Error {
@@ -187,6 +194,38 @@ export function completeTaskById(
   taskId: string,
 ): Promise<{ assignment_id: string }> {
   return call('complete_task_by_id', { p_token: token, p_task_id: taskId })
+}
+
+/**
+ * Pede para trocar a sua task ativa pela de outro membro — a troca so acontece
+ * quando a pessoa aceitar. Recebe os dois assignment_ids que a tela mostrava:
+ * se qualquer um mudou nesse meio-tempo, falha com SWAP_STALE em vez de pedir
+ * uma task que ninguem viu. So um pedido enviado por vez.
+ */
+export function requestSwap(
+  token: string,
+  myAssignmentId: string,
+  theirAssignmentId: string,
+): Promise<{ request_id: string }> {
+  return call('request_swap', {
+    p_token: token,
+    p_my_assignment_id: myAssignmentId,
+    p_their_assignment_id: theirAssignmentId,
+  })
+}
+
+/** Aceita um pedido recebido e faz a troca. Devolve a task que voce recebeu. */
+export function acceptSwap(token: string, requestId: string): Promise<Task> {
+  return call<Task>('accept_swap', { p_token: token, p_request_id: requestId })
+}
+
+export function declineSwap(token: string, requestId: string): Promise<{ request_id: string }> {
+  return call('decline_swap', { p_token: token, p_request_id: requestId })
+}
+
+/** Desiste do pedido que voce enviou. Nao precisa de id: so ha um. */
+export function cancelSwap(token: string): Promise<{ request_id: string }> {
+  return call('cancel_swap', { p_token: token })
 }
 
 /**

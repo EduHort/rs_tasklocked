@@ -47,10 +47,23 @@ export type TierProgress = {
   active: number
 }
 
+/**
+ * Um pedido de troca de task esperando resposta. So chega enquanto as duas
+ * tasks continuam ativas, entao elas sao sempre as `active` dos dois membros.
+ */
+export type SwapRequest = {
+  id: string
+  from_member_id: string
+  to_member_id: string
+  created_at: string
+}
+
 export type GroupState = {
   /** id do membro dono do token — quem esta olhando a tela */
   me: string
   members: Member[]
+  /** os pedidos de troca que envolvem quem esta olhando: o enviado e os recebidos */
+  swap_requests: SwapRequest[]
   /** null quando o grupo concluiu todas as tasks do pool */
   current_tier: Tier | null
   progress: TierProgress[]
