@@ -300,11 +300,13 @@ surpreende — por isso o aviso no Discord destaca esse caso.
 O Worker posta num canal do Discord via **webhook** (não é um bot: o webhook é só uma URL que aceita
 um POST) em três casos:
 
-- **Task nova:** quantas entraram e um card por task — nome com link da wiki, dica, imagem e a cor
-  do tier. Se alguma reabrir um tier que o grupo já tinha fechado, avisa que o tier atual voltou
-  (ex.: de **Hard** para **Easy**).
-- **Task removida:** uma linha por task, dizendo quem estava com ela e foi liberado, ou se ela já
-  tinha sido concluída. Se a removida fechar um tier, avisa que o tier atual avançou.
+- **Task nova:** "X tasks entraram na lista:" e o nome de cada uma. Se alguma reabrir um tier que
+  o grupo já tinha fechado, avisa que o tier atual voltou (ex.: de **Hard** para **Easy**).
+- **Task removida:** "X tasks saíram da lista:" e o nome de cada uma, dizendo quem estava com ela e
+  foi liberado, ou se ela já tinha sido concluída. Se a removida fechar um tier, avisa que o tier
+  atual avançou.
+
+Se a mesma sync trouxe tasks novas e removidas, os dois blocos vão na mesma mensagem.
 - **Sync falhou** (só no cron): o erro, para ninguém precisar abrir o painel do Cloudflare para
   descobrir que a lista parou de atualizar.
 
@@ -324,8 +326,8 @@ no banco — é o jeito de ver a mensagem sem esperar entrar task nova.
   dia seguinte a task já não é nova.
 - **Banco vazio não avisa.** Na primeira carga (ou depois de um reset) seriam as ~1000 tasks de uma
   vez; o Worker reconhece o caso e fica quieto.
-- **Até 10 cards por mensagem** (limite do Discord). Passou disso, a mensagem diz quantas foram e
-  mostra as 10 primeiras, dos tiers mais baixos para os mais altos.
+- **Até 15 nomes por bloco.** Passou disso, a lista termina em "…e mais N", e as tasks ficam em
+  ordem de tier, das mais baixas para as mais altas.
 - **O `npm run seed` manual não avisa** — ele grava direto na tabela, sem passar pelo Worker.
 - A URL do webhook é um segredo: quem tiver ela posta no canal. Se vazar, apague o webhook no
   Discord e crie outro.

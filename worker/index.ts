@@ -32,18 +32,6 @@ const TIER_LABEL: Record<Tier, string> = {
   master: 'Master',
 }
 
-/** Barra lateral do embed — as mesmas `--color-tier-*` do site. */
-const TIER_COLOR: Record<Tier, number> = {
-  easy: 0x6f9c4a,
-  medium: 0x4a86b8,
-  hard: 0x9a6bbf,
-  elite: 0xd08a3a,
-  master: 0xc0503f,
-}
-
-/** Limite do Discord por mensagem. O que passar disso vira so a contagem. */
-const MAX_EMBEDS = 10
-
 type Env = {
   SUPABASE_URL: string
   SUPABASE_ANON_KEY: string
@@ -71,14 +59,14 @@ type RawTask = {
  */
 type ScheduledController = { cron: string; scheduledTime: number }
 
-/** Uma task nova, como a `sync_tasks` devolve em `new_tasks`. */
+/**
+ * Uma task nova, como a `sync_tasks` devolve em `new_tasks`. Vem tambem dica,
+ * wiki e imagem, mas o aviso so usa o nome.
+ */
 type NewTask = {
   id: string
   tier: Tier
   name: string
-  tip: string
-  wiki_link: string
-  image_link: string
 }
 
 /** Uma task que sumiu do upstream, como a `sync_tasks` devolve em `removed_tasks`. */
@@ -86,7 +74,6 @@ type RemovedTask = {
   id: string
   tier: Tier
   name: string
-  wiki_link: string
   /** ja tinha sido concluida: so sai da lista, o historico fica */
   completed: boolean
   /** quem estava com ela e foi liberado ("Nome", ou "Nome (extra)") */
@@ -169,37 +156,28 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
-/**
- * A mensagem do webhook: uma linha de resumo e um embed por task — nome com
- * link da wiki, a dica, a imagem e a cor do tier.
- */
-function discordMessage(lines: string[], tasks: NewTask[]) {
-  const content =
-    tasks.length > MAX_EMBEDS
-      ? [...lines, `Aqui vão as ${MAX_EMBEDS} primeiras — o resto está em "A fazer" no site.`]
-      : lines
-
+/** A mensagem do webhook: so texto, uma linha por task. */
+function discordMessage(lines: string[]) {
   return {
-    content: truncate(content.join('\n'), MAX_CONTENT),
+    content: truncate(lines.join('\n'), MAX_CONTENT),
     // Os nomes vem do upstream, e o `content` e texto nosso — mas nada aqui
     // deve marcar ninguem, entao desliga as mencoes de vez.
     allowed_mentions: { parse: [] },
-    embeds: tasks.slice(0, MAX_EMBEDS).map((task) => ({
-      title: truncate(task.name, 256),
-      url: task.wiki_link,
-      description: truncate(task.tip, 300),
-      color: TIER_COLOR[task.tier],
-      thumbnail: { url: task.image_link },
-      footer: { text: TIER_LABEL[task.tier] },
-    })),
   }
 }
 
-/** Removidas listadas uma a uma; o que passar disso vira so a contagem. */
-const MAX_REMOVED_LINES = 15
+/** Tasks listadas uma a uma por bloco; o que passar disso vira so a contagem. */
+const MAX_LINES = 15
 
 /** Limite do Discord para o `content`. */
 const MAX_CONTENT = 2000
+
+/** O cabecalho e uma linha por task, cortando em MAX_LINES. */
+function block(header: string, items: string[]): string[] {
+  const lines = [header, ...items.slice(0, MAX_LINES)]
+  if (items.length > MAX_LINES) lines.push(`…e mais ${items.length - MAX_LINES}.`)
+  return lines
+}
 
 /** "Ana", "Ana e Bruno", "Ana, Bruno e Caio". */
 function joinNames(names: string[]): string {
@@ -210,7 +188,7 @@ function joinNames(names: string[]): string {
 
 /** Uma linha por task removida: o que acontece com ela e com quem estava com ela. */
 function removedLine(task: RemovedTask): string {
-  const head = `• [${task.name}](${task.wiki_link}) · ${TIER_LABEL[task.tier]}`
+  const head = `• ${task.name}`
   if (task.released.length > 0) {
     const who = joinNames(task.released)
     return task.released.length === 1
@@ -229,27 +207,34 @@ function summary(result: SyncResult, added: NewTask[], removed: RemovedTask[]): 
 
   if (added.length > 0) {
     lines.push(
-      added.length === 1
-        ? '**1 task nova** entrou no pool.'
-        : `**${added.length} tasks novas** entraram no pool.`,
+      ...block(
+        added.length === 1
+          ? '**1 task entrou na lista:**'
+          : `**${added.length} tasks entraram na lista:**`,
+        added.map((task) => `• ${task.name}`),
+      ),
     )
   }
 
   if (removed.length > 0) {
+    // Linha em branco entre os blocos quando a mesma sync traz os dois.
+    if (lines.length > 0) lines.push('')
     lines.push(
-      removed.length === 1
-        ? '**1 task saiu** da lista do Taskman:'
-        : `**${removed.length} tasks saíram** da lista do Taskman:`,
-      ...removed.slice(0, MAX_REMOVED_LINES).map(removedLine),
+      ...block(
+        removed.length === 1
+          ? '**1 task saiu da lista:**'
+          : `**${removed.length} tasks saíram da lista:**`,
+        removed.map(removedLine),
+      ),
     )
-    if (removed.length > MAX_REMOVED_LINES) {
-      lines.push(`…e mais ${removed.length - MAX_REMOVED_LINES}.`)
-    }
   }
 
   const before = result.tier_before ?? null
   const after = result.tier_after ?? null
   const label = (order: number) => TIER_LABEL[TIERS[order - 1]]
+  const tierChanged = before !== after
+
+  if (tierChanged) lines.push('')
 
   if (after !== null && (before === null || after < before)) {
     lines.push(
@@ -298,10 +283,7 @@ async function notify(env: Env, result: SyncResult): Promise<string> {
   if (added.length === 0 && removed.length === 0) return 'nada novo'
 
   try {
-    await postToDiscord(
-      env.DISCORD_WEBHOOK_URL,
-      discordMessage(summary(result, added, removed), added),
-    )
+    await postToDiscord(env.DISCORD_WEBHOOK_URL, discordMessage(summary(result, added, removed)))
     return 'avisado'
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -322,7 +304,7 @@ async function run(env: Env): Promise<string> {
 
 /**
  * Avisa no Discord que a sync do cron falhou. Sem isto a falha so aparecia no
- * painel do Cloudflare, e a sync ficou parada uma semana sem ninguem saber.
+ * painel do Cloudflare, e a sync ficou parada desde 15/09/2026 sem ninguem saber.
  * Nunca lanca: o erro que importa e o da sync, que o `scheduled` relanca.
  */
 async function notifyFailure(env: Env, error: string): Promise<void> {
@@ -357,10 +339,12 @@ async function testDiscord(env: Env): Promise<string> {
 
   await postToDiscord(
     env.DISCORD_WEBHOOK_URL,
-    discordMessage(
-      ['🧪 **Teste do aviso** — nada mudou no pool. Quando entrar task nova, fica assim:'],
-      sample,
-    ),
+    discordMessage([
+      '🧪 **Teste do aviso** — nada mudou no pool. Quando entrar task nova, fica assim:',
+      '',
+      `**${sample.length} tasks entraram na lista:**`,
+      ...sample.map((task) => `• ${task.name}`),
+    ]),
   )
   return 'aviso de teste enviado'
 }
