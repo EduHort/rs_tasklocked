@@ -219,9 +219,8 @@ O que vale conferir antes:
   É o gating funcionando, não um bug.
 - **Task que muda de tier** mantém a conclusão; ela só passa a contar na outra barra de progresso.
 - **Mesmo `id` com nome novo** atualiza o texto em todas as telas, inclusive na lista de concluídas.
-- **`id` que some do JSON não é apagado** — o seed nunca deleta. A task fica no pool para sempre. Se
-  precisar tirar, é `delete` manual no Supabase, e antes dele o assignment daquela task (a FK
-  `assignments.task_id` segura).
+- **`id` que some do JSON não sai pelo seed** — o seed só acrescenta. Quem tira é a
+  [sincronização automática](#sincronização-automática), que marca a task como removida.
 
 O total ("X de Y tasks concluídas") vem do banco, via `task_total` no `get_state` e no
 `list_completed`, então não há número para ajustar no código.
@@ -231,8 +230,16 @@ O total ("X de Y tasks concluídas") vem do banco, via `task_total` no `get_stat
 ## Sincronização automática
 
 Um Worker com Cron Trigger busca o `task-list.json` do upstream todo dia às **09:00 UTC** (06:00 em
-Brasília, antes de o grupo jogar) e manda para a RPC `sync_tasks`. Tasks novas entram no pool
-sozinhas.
+Brasília, antes de o grupo jogar) e manda para a RPC `sync_tasks`, que compara **por id** (nunca
+pelo nome: há nomes repetidos, e o upstream corrige texto mantendo o id):
+
+- **id novo** entra no pool;
+- **id que já existe** é atualizado (nome, dica, tier…);
+- **id que sumiu** ganha `removed_at` — a linha nunca é apagada, porque o histórico aponta para ela:
+  - se ninguém concluiu, sai do pool (não é sorteada, não conta no total, não segura o tier), e quem
+    estava com ela — de task principal ou de extra — fica livre para pegar outra;
+  - se já foi concluída, nada muda: continua contando como concluída;
+- **id removido que volta** ao upstream volta ao pool, e é avisado como task nova.
 
 É um **deploy separado do site**: o Cloudflare Pages não tem Cron Triggers, isso é do Workers.
 
@@ -250,9 +257,10 @@ O horário está em [wrangler.toml](wrangler.toml) (`crons = ["0 9 * * *"]`); o 
 ### Por que um segredo próprio, e não a service_role key
 
 A `service_role` ignora a RLS: um Worker comprometido leria a tabela `members`, pegaria os tokens e
-viraria qualquer pessoa do grupo. O `SYNC_SECRET` só abre a `sync_tasks`, que só faz `upsert` em
-`tasks` — não lê membros, não toca em `assignments`, não conclui nada. O banco guarda só o hash
-bcrypt dele, no `group_state`, igual ao código do grupo.
+viraria qualquer pessoa do grupo. O `SYNC_SECRET` só abre a `sync_tasks`, que só deixa `tasks`
+igual ao upstream — e, quando uma task sai, libera quem estava com ela. Não devolve tokens, não
+conclui nada, não entrega task a ninguém. O banco guarda só o hash bcrypt dele, no `group_state`,
+igual ao código do grupo.
 
 ### O que a `sync_tasks` recusa
 
@@ -261,16 +269,18 @@ bcrypt dele, no `group_state`, igual ao código do grupo.
 | `INVALID_SYNC_SECRET` | segredo errado |
 | `SYNC_NOT_CONFIGURED` | `npm run set-sync-secret` nunca rodou |
 | `SYNC_BAD_PAYLOAD` | o corpo não é um array |
-| `SYNC_SHRANK` | o upstream veio **menor** que o banco — commit ruim lá em cima ou download truncado |
+| `SYNC_TOO_MANY_REMOVED` | mais de **25** tasks sumiriam de uma vez — quase certamente o arquivo do upstream quebrado (tier renomeado, estrutura trocada), não o dono da lista tirando tasks |
 | `SYNC_DUPLICATE_IDS` | dois ids iguais no mesmo payload |
 
-A guarda de encolhimento existe porque o `upsert` nunca deleta: um JSON pela metade não apagaria
-nada, mas passaria despercebido no log como se fosse um dia normal.
+A versão anterior tinha uma guarda que recusava **qualquer** lista menor que o banco. Ela travou a
+sync de 15/09/2026 em diante: o upstream tirou 2 tasks, o banco ficou com 2 a mais, e toda rodada
+seguinte era recusada sem ninguém saber. O limite de 25 por vez cobre o mesmo risco (um arquivo
+quebrado) sem barrar uma remoção normal — hoje cada atualização do upstream tira de 0 a 2.
 
 ### Acompanhar e disparar na mão
 
 ```bash
-npm run worker:log    # wrangler tail — {"inserted":N,"updated":N,"total":N,"tier_before":N,"tier_after":N,"discord":"…"}
+npm run worker:log    # wrangler tail — {"inserted":N,"updated":N,"removed":N,"total":N,"tier_before":N,"tier_after":N,"discord":"…"}
 export SYNC_SECRET='…'   # o valor que o `npm run set-sync-secret` imprimiu
 curl -X POST https://<worker>.workers.dev -H "authorization: Bearer $SYNC_SECRET"
 ```
@@ -287,10 +297,16 @@ surpreende — por isso o aviso no Discord destaca esse caso.
 
 ### Aviso no Discord
 
-Quando a sincronização traz task nova, o Worker posta num canal do Discord via **webhook** (não é um
-bot: o webhook é só uma URL que aceita um POST). A mensagem traz quantas tasks entraram e um card por
-task — nome com link da wiki, dica, imagem e a cor do tier. Se alguma delas reabrir um tier que o
-grupo já tinha fechado, a mensagem avisa que o tier atual voltou (ex.: de **Hard** para **Easy**).
+O Worker posta num canal do Discord via **webhook** (não é um bot: o webhook é só uma URL que aceita
+um POST) em três casos:
+
+- **Task nova:** quantas entraram e um card por task — nome com link da wiki, dica, imagem e a cor
+  do tier. Se alguma reabrir um tier que o grupo já tinha fechado, avisa que o tier atual voltou
+  (ex.: de **Hard** para **Easy**).
+- **Task removida:** uma linha por task, dizendo quem estava com ela e foi liberado, ou se ela já
+  tinha sido concluída. Se a removida fechar um tier, avisa que o tier atual avançou.
+- **Sync falhou** (só no cron): o erro, para ninguém precisar abrir o painel do Cloudflare para
+  descobrir que a lista parou de atualizar.
 
 ```bash
 # Discord: Configurações do canal → Integrações → Webhooks → Novo webhook → Copiar URL
@@ -365,7 +381,7 @@ docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=tasklocked -p 5
 psql ... -f supabase/schema.sql
 psql ... -f supabase/tests/rules.sql        # 62 asserções sequenciais
 psql ... -f supabase/tests/extra-tasks.sql  # 57 asserções das tasks extra e da /completed
-psql ... -f supabase/tests/sync-tasks.sql   # 10 asserções do que o worker avisa no Discord
+psql ... -f supabase/tests/sync-tasks.sql   # 30 asserções da sync: o que entra, o que sai, quem é liberado
 psql ... -f supabase/tests/stats.sql        # 36 asserções da get_stats (tempos, fuso, semanas)
 psql ... -f supabase/tests/swap-task.sql    # 40 asserções da troca de tasks (pedir, aceitar, recusar)
 bash supabase/tests/concurrency.sh          # 20 conexões paralelas disputando o pool

@@ -7,13 +7,15 @@
  *
  * Nao carrega a service_role key de proposito: ela ignora a RLS, e um worker
  * comprometido leria a tabela `members` e viraria qualquer pessoa do grupo. O
- * `SYNC_SECRET` daqui so abre a `sync_tasks`, que so faz upsert em `tasks`.
+ * `SYNC_SECRET` daqui so abre a `sync_tasks`, que so deixa `tasks` igual ao
+ * upstream (e libera quem estava com uma task que saiu).
  *
- * Nao apaga nada. Id que sumir do upstream continua no pool — tirar uma task do
- * ar e decisao humana, nao de cron.
+ * Id que sumir do upstream sai do pool: a `sync_tasks` marca como removida e
+ * libera quem estava com ela. O que o grupo ja concluiu fica no historico.
  *
- * Quando entra task nova, avisa num canal do Discord via webhook (opcional: sem
- * `DISCORD_WEBHOOK_URL`, so sincroniza).
+ * Avisa num canal do Discord via webhook quando entra task nova, quando sai
+ * task e quando a sync falha (opcional: sem `DISCORD_WEBHOOK_URL`, so
+ * sincroniza).
  */
 
 const UPSTREAM =
@@ -79,6 +81,18 @@ type NewTask = {
   image_link: string
 }
 
+/** Uma task que sumiu do upstream, como a `sync_tasks` devolve em `removed_tasks`. */
+type RemovedTask = {
+  id: string
+  tier: Tier
+  name: string
+  wiki_link: string
+  /** ja tinha sido concluida: so sai da lista, o historico fica */
+  completed: boolean
+  /** quem estava com ela e foi liberado ("Nome", ou "Nome (extra)") */
+  released: string[]
+}
+
 type SyncResult = {
   inserted: number
   updated: number
@@ -86,6 +100,7 @@ type SyncResult = {
   // Opcionais: um schema.sql anterior a este worker nao manda. Sem eles, o
   // aviso so nao sai.
   new_tasks?: NewTask[]
+  removed_tasks?: RemovedTask[]
   /** tier_order do tier atual antes/depois. null = o grupo tinha concluido tudo. */
   tier_before?: number | null
   tier_after?: number | null
@@ -119,8 +134,8 @@ async function fetchUpstream() {
   )
 
   // Um JSON valido mas com a estrutura trocada (outro layout, arquivo movido)
-  // chegaria aqui como zero tasks. A `sync_tasks` recusaria pelo guard de
-  // encolhimento, mas o erro fica mais claro dito daqui.
+  // chegaria aqui como zero tasks. A `sync_tasks` recusaria pelo limite de
+  // remocoes, mas o erro fica mais claro dito daqui.
   if (tasks.length === 0) {
     throw new Error('upstream veio sem nenhuma task — o formato do arquivo mudou?')
   }
@@ -143,7 +158,7 @@ async function sync(env: Env): Promise<SyncResult> {
 
   const body = await response.text()
   if (!response.ok) {
-    // O corpo traz o codigo cru da funcao (SYNC_SHRANK, INVALID_SYNC_SECRET…).
+    // O corpo traz o codigo cru da funcao (SYNC_TOO_MANY_REMOVED, INVALID_SYNC_SECRET…).
     throw new Error(`sync_tasks recusou (${response.status}): ${body}`)
   }
 
@@ -165,7 +180,7 @@ function discordMessage(lines: string[], tasks: NewTask[]) {
       : lines
 
   return {
-    content: content.join('\n'),
+    content: truncate(content.join('\n'), MAX_CONTENT),
     // Os nomes vem do upstream, e o `content` e texto nosso — mas nada aqui
     // deve marcar ninguem, entao desliga as mencoes de vez.
     allowed_mentions: { parse: [] },
@@ -180,22 +195,74 @@ function discordMessage(lines: string[], tasks: NewTask[]) {
   }
 }
 
-/** A linha de resumo do aviso, com o alerta quando o tier atual volta para tras. */
-function summary(result: SyncResult, tasks: NewTask[]): string[] {
-  const lines = [
-    tasks.length === 1
-      ? '**1 task nova** entrou no pool.'
-      : `**${tasks.length} tasks novas** entraram no pool.`,
-  ]
+/** Removidas listadas uma a uma; o que passar disso vira so a contagem. */
+const MAX_REMOVED_LINES = 15
+
+/** Limite do Discord para o `content`. */
+const MAX_CONTENT = 2000
+
+/** "Ana", "Ana e Bruno", "Ana, Bruno e Caio". */
+function joinNames(names: string[]): string {
+  return names.length <= 1
+    ? (names[0] ?? '')
+    : `${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}`
+}
+
+/** Uma linha por task removida: o que acontece com ela e com quem estava com ela. */
+function removedLine(task: RemovedTask): string {
+  const head = `• [${task.name}](${task.wiki_link}) · ${TIER_LABEL[task.tier]}`
+  if (task.released.length > 0) {
+    const who = joinNames(task.released)
+    return task.released.length === 1
+      ? `${head} — estava com ${who}, que já pode pegar outra.`
+      : `${head} — estava com ${who}, que já podem pegar outra.`
+  }
+  return task.completed ? `${head} — já concluída, continua no histórico.` : head
+}
+
+/**
+ * O texto do aviso: o que entrou, o que saiu, e o alerta quando o tier atual
+ * muda por causa disso.
+ */
+function summary(result: SyncResult, added: NewTask[], removed: RemovedTask[]): string[] {
+  const lines: string[] = []
+
+  if (added.length > 0) {
+    lines.push(
+      added.length === 1
+        ? '**1 task nova** entrou no pool.'
+        : `**${added.length} tasks novas** entraram no pool.`,
+    )
+  }
+
+  if (removed.length > 0) {
+    lines.push(
+      removed.length === 1
+        ? '**1 task saiu** da lista do Taskman:'
+        : `**${removed.length} tasks saíram** da lista do Taskman:`,
+      ...removed.slice(0, MAX_REMOVED_LINES).map(removedLine),
+    )
+    if (removed.length > MAX_REMOVED_LINES) {
+      lines.push(`…e mais ${removed.length - MAX_REMOVED_LINES}.`)
+    }
+  }
 
   const before = result.tier_before ?? null
   const after = result.tier_after ?? null
+  const label = (order: number) => TIER_LABEL[TIERS[order - 1]]
+
   if (after !== null && (before === null || after < before)) {
-    const tier = TIER_LABEL[TIERS[after - 1]]
     lines.push(
       before === null
-        ? `⚠️ O grupo tinha zerado o pool — agora volta para o tier **${tier}**.`
-        : `⚠️ Entrou task de um tier que o grupo já tinha fechado: o tier atual volta de **${TIER_LABEL[TIERS[before - 1]]}** para **${tier}**.`,
+        ? `⚠️ O grupo tinha zerado o pool — agora volta para o tier **${label(after)}**.`
+        : `⚠️ Entrou task de um tier que o grupo já tinha fechado: o tier atual volta de **${label(before)}** para **${label(after)}**.`,
+    )
+  } else if (before !== null && (after === null || after > before)) {
+    // So acontece por remocao: saiu a ultima task que segurava o tier.
+    lines.push(
+      after === null
+        ? '🎉 Com isso o grupo zerou o pool.'
+        : `Com isso o tier **${label(before)}** fechou: o tier atual agora é **${label(after)}**.`,
     )
   }
 
@@ -214,7 +281,7 @@ async function postToDiscord(url: string, message: unknown): Promise<void> {
 }
 
 /**
- * Avisa no Discord o que a sync trouxe de novo. Nunca lanca: quando isto roda,
+ * Avisa no Discord o que a sync mudou no pool. Nunca lanca: quando isto roda,
  * as tasks ja estao no banco, e o cron nao deve aparecer como falho so porque
  * o aviso nao saiu. O preco e que um aviso perdido nao volta — no dia
  * seguinte a task ja nao e nova. O erro fica no log.
@@ -222,16 +289,19 @@ async function postToDiscord(url: string, message: unknown): Promise<void> {
  * Devolve o que aconteceu, para o log.
  */
 async function notify(env: Env, result: SyncResult): Promise<string> {
-  const tasks = result.new_tasks ?? []
-
-  if (!env.DISCORD_WEBHOOK_URL) return 'sem webhook'
-  if (tasks.length === 0) return 'nada novo'
+  const removed = result.removed_tasks ?? []
   // Banco que estava vazio (primeira carga, depois de um reset): seriam as ~1000
   // tasks de uma vez. Isso nao e novidade, e so o pool nascendo.
-  if (result.total === result.inserted) return 'carga inicial, sem aviso'
+  const added = result.total === result.inserted ? [] : (result.new_tasks ?? [])
+
+  if (!env.DISCORD_WEBHOOK_URL) return 'sem webhook'
+  if (added.length === 0 && removed.length === 0) return 'nada novo'
 
   try {
-    await postToDiscord(env.DISCORD_WEBHOOK_URL, discordMessage(summary(result, tasks), tasks))
+    await postToDiscord(
+      env.DISCORD_WEBHOOK_URL,
+      discordMessage(summary(result, added, removed), added),
+    )
     return 'avisado'
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -246,7 +316,29 @@ async function run(env: Env): Promise<string> {
   const discord = await notify(env, result)
   // Sem o `new_tasks`: na primeira carga seriam ~1000 tasks no log.
   const { inserted, updated, total, tier_before, tier_after } = result
-  return JSON.stringify({ inserted, updated, total, tier_before, tier_after, discord })
+  const removed = result.removed_tasks?.length ?? 0
+  return JSON.stringify({ inserted, updated, removed, total, tier_before, tier_after, discord })
+}
+
+/**
+ * Avisa no Discord que a sync do cron falhou. Sem isto a falha so aparecia no
+ * painel do Cloudflare, e a sync ficou parada uma semana sem ninguem saber.
+ * Nunca lanca: o erro que importa e o da sync, que o `scheduled` relanca.
+ */
+async function notifyFailure(env: Env, error: string): Promise<void> {
+  if (!env.DISCORD_WEBHOOK_URL) return
+  try {
+    await postToDiscord(env.DISCORD_WEBHOOK_URL, {
+      content: [
+        '⚠️ **A sincronização das tasks falhou** — o pool não foi atualizado com a lista do Taskman.',
+        `\`\`\`\n${truncate(error, 1500)}\n\`\`\``,
+        'Ela tenta de novo no próximo horário do cron.',
+      ].join('\n'),
+      allowed_mentions: { parse: [] },
+    })
+  } catch (err) {
+    console.error(`aviso de falha no discord falhou: ${err instanceof Error ? err.message : err}`)
+  }
 }
 
 /**
@@ -278,7 +370,9 @@ export default {
     try {
       console.log(`[${controller.cron}] sync ok: ${await run(env)}`)
     } catch (err) {
-      console.error(`[${controller.cron}] sync falhou: ${err instanceof Error ? err.message : err}`)
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[${controller.cron}] sync falhou: ${message}`)
+      await notifyFailure(env, message)
       // Relanca para a execucao aparecer como falha no painel do Cloudflare, em
       // vez de sumir como se tivesse dado certo.
       throw err

@@ -41,6 +41,15 @@ create table if not exists tasks (
 create index if not exists tasks_tier_order_idx on tasks (tier_order);
 create index if not exists tasks_name_idx       on tasks (name);
 
+-- Quando a task sumiu do upstream (ver sync_tasks). Nao se apaga a linha:
+-- `assignments` e `extra_assignments` apontam para ela, e o que o grupo ja
+-- concluiu e historia. Nulo = task no ar.
+--
+-- Removida e NAO concluida: sai do pool (nao e sorteada, nao conta no total,
+-- nao segura o tier). Removida e ja concluida: nada muda — continua contando
+-- como concluida, como sempre contou.
+alter table tasks add column if not exists removed_at timestamptz;
+
 -- Grupo unico: o check no primary key garante que so existe UMA linha.
 create table if not exists group_state (
   id          boolean primary key default true check (id),
@@ -226,7 +235,8 @@ as $$
 $$;
 
 -- Tier atual do grupo = menor tier_order que ainda tem task nao concluida.
--- Retorna null quando o grupo concluiu todas as tasks.
+-- Retorna null quando o grupo concluiu todas as tasks. Task removida do
+-- upstream nao segura tier nenhum.
 create or replace function current_tier_order()
 returns int
 language sql
@@ -234,18 +244,28 @@ stable
 security definer
 set search_path = public, extensions
 as $$
-  select t.tier_order
+  select min(t.tier_order)
   from tasks t
-  group by t.tier_order
-  having count(*) > (
-    select count(*)
-    from assignments a
-    join tasks t2 on t2.id = a.task_id
-    where t2.tier_order = t.tier_order
-      and a.status = 'completed'
-  )
-  order by t.tier_order
-  limit 1;
+  where t.removed_at is null
+    and not exists (
+      select 1 from assignments a where a.task_id = t.id and a.status = 'completed'
+    );
+$$;
+
+-- Tamanho do pool hoje — o denominador de "X de Y" em todas as telas. Entra
+-- toda task no ar, e a removida que ja tinha sido concluida (ela continua no
+-- numerador, entao tem que continuar no denominador).
+create or replace function pool_total()
+returns int
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select count(*)::int
+  from tasks t
+  where t.removed_at is null
+     or exists (select 1 from assignments a where a.task_id = t.id and a.status = 'completed');
 $$;
 
 -- -----------------------------------------------------------------------------
@@ -425,6 +445,8 @@ begin
           count(*) filter (where a.status = 'active')::int    as active
         from tasks t
         left join assignments a on a.task_id = t.id
+        -- O mesmo recorte do pool_total.
+        where t.removed_at is null or a.status = 'completed'
         group by t.tier, t.tier_order
       ) p
     ), '[]'::json),
@@ -451,7 +473,7 @@ begin
     -- numero fixo no front: o task-list.json muda de tamanho a cada atualizacao
     -- da lista do jogo, e um `npm run seed` novo ja deixa este valor correto
     -- sem tocar em codigo.
-    'task_total', (select count(*)::int from tasks)
+    'task_total', pool_total()
   );
 end;
 $$;
@@ -498,6 +520,7 @@ begin
     select t.id into v_task_id
     from tasks t
     where t.tier_order = v_tier
+      and t.removed_at is null
       -- nunca atribuida (nem ativa, nem concluida). O nome NAO entra aqui:
       -- duas pessoas podem ficar com tasks de mesmo nome e ids diferentes.
       and not exists (select 1 from assignments a where a.task_id = t.id)
@@ -660,7 +683,7 @@ begin
       'match_total', (select count(*)::int from matching),
 
       -- Mesmo denominador do get_state: quantas tasks o pool tem hoje.
-      'task_total', (select count(*)::int from tasks),
+      'task_total', pool_total(),
 
       'member_total', (select count(*)::int from members),
 
@@ -785,7 +808,8 @@ begin
     'total', (
       select count(*)::int
       from tasks t
-      where not exists (
+      where t.removed_at is null
+        and not exists (
           select 1 from assignments a where a.task_id = t.id and a.status = 'completed'
         )
         and (v_tier   is null or t.tier = v_tier)
@@ -819,7 +843,8 @@ begin
         left join members mem   on mem.id = a.member_id
         left join extra_assignments ex
           on ex.task_id = t.id and ex.member_id = v_member_id
-        where not exists (
+        where t.removed_at is null
+          and not exists (
             select 1 from assignments c where c.task_id = t.id and c.status = 'completed'
           )
           and (v_tier   is null or t.tier = v_tier)
@@ -856,7 +881,10 @@ begin
   -- leitura abaixo e o insert, e o insert morreria com unique_violation crua.
   perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
 
-  if p_task_id is null or not exists (select 1 from tasks where id = p_task_id) then
+  -- Removida do upstream conta como inexistente: registrar a conclusao a
+  -- devolveria ao pool pela porta dos fundos.
+  if p_task_id is null
+     or not exists (select 1 from tasks where id = p_task_id and removed_at is null) then
     raise exception 'TASK_NOT_FOUND';
   end if;
 
@@ -1471,7 +1499,7 @@ begin
     select json_build_object(
       'me',         v_member_id,
       'started_at', v_started,
-      'task_total', (select count(*)::int from tasks),
+      'task_total', pool_total(),
 
       'pool_completed',  (select count(*)::int from done where not extra),
       'extra_completed', (select count(*)::int from done where extra),
@@ -1598,14 +1626,17 @@ $$;
 --
 -- Um Cron Trigger do Cloudflare Workers busca o task-list.json do upstream
 -- (github.com/OSRS-Taskman/collection-log-master) uma vez por dia e manda a
--- lista inteira para `sync_tasks`. E o mesmo efeito do `npm run seed`, so que
--- sem ninguem no teclado.
+-- lista inteira para `sync_tasks`. E o `npm run seed` sem ninguem no teclado —
+-- com uma diferenca: o seed so acrescenta, e a sync tambem tira do pool o que
+-- sumiu do upstream.
 --
 -- Por que uma RPC com segredo proprio, e nao a service_role key no worker:
 -- a service_role ignora a RLS, entao um worker comprometido leria a tabela
--- `members` e viraria qualquer pessoa do grupo. Este segredo so consegue fazer
--- upsert em `tasks` — nao le membros, nao toca em assignments, nao conclui
--- nada. E o mesmo raciocinio do resto da API: cada credencial faz uma coisa so.
+-- `members` e viraria qualquer pessoa do grupo. Este segredo so consegue deixar
+-- `tasks` igual a lista do upstream — e, quando uma task sai, liberar quem
+-- estava com ela. Nao le membros para fora (so os nomes de quem foi liberado),
+-- nao conclui nada, nao entrega task a ninguem. E o mesmo raciocinio do resto
+-- da API: cada credencial faz uma coisa so.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
@@ -1636,18 +1667,23 @@ end;
 $$;
 
 -- -----------------------------------------------------------------------------
--- sync_tasks: upsert da lista inteira, por id. E o `npm run seed` em SQL.
+-- sync_tasks: deixa o pool igual a lista do upstream, por id.
 --
 -- Recebe um array ja achatado, com `tier` e `tier_order` resolvidos pelo worker
 -- — a mesma forma que o seed-tasks.ts monta. Devolve o que mudou, para o worker
 -- registrar no log (e nao ficar invisivel o que rodou de madrugada).
 --
--- `new_tasks` e `tier_before`/`tier_after` sao o que o worker avisa no Discord:
--- quais tasks entraram e se alguma delas reabriu um tier que o grupo ja tinha
--- fechado (o tier atual volta para tras — ver current_tier_order).
+-- Id novo entra; id que ja existe e atualizado (nome, dica, tier... — o upstream
+-- corrige texto sem trocar o id). Id que estava no banco e nao veio e marcado
+-- como removido (`removed_at`), nunca apagado:
+--   - ninguem concluiu: sai do pool, e quem estava com ela — de task principal
+--     ou de extra — e liberado para pegar outra;
+--   - ja foi concluida: so ganha a marca; continua contando como concluida.
+-- Id removido que volta ao upstream volta ao pool, e conta como task nova.
 --
--- Nao apaga nada: id que sumiu do upstream continua no pool, exatamente como no
--- seed manual. Tirar uma task do ar e decisao humana, nao de cron.
+-- `new_tasks`, `removed_tasks` e `tier_before`/`tier_after` sao o que o worker
+-- avisa no Discord: o que entrou, o que saiu (e quem foi liberado), e se o
+-- tier atual mudou por causa disso.
 -- -----------------------------------------------------------------------------
 create or replace function sync_tasks(p_secret text, p_tasks jsonb)
 returns json
@@ -1656,13 +1692,18 @@ security definer
 set search_path = public, extensions
 as $$
 declare
+  -- Mais remocoes que isto de uma vez e quase certamente o arquivo do upstream
+  -- quebrado (tier renomeado, estrutura trocada), e nao o dono da lista tirando
+  -- tasks: para tudo e deixa um humano olhar. Hoje cada atualizacao tira 0–2.
+  c_max_removed constant int := 25;
+
   v_hash     text;
-  v_incoming int;
-  v_current  int;
   v_dupes    int;
+  v_removing int;
   v_inserted int;
   v_updated  int;
   v_new      json;
+  v_removed  json;
   v_tier_before int;
 begin
   select sync_secret_hash into v_hash from group_state where id = true;
@@ -1679,17 +1720,6 @@ begin
     raise exception 'SYNC_BAD_PAYLOAD';
   end if;
 
-  select count(*) into v_incoming from jsonb_array_elements(p_tasks);
-  select count(*) into v_current  from tasks;
-
-  -- Guarda: a lista do upstream so cresce. Se veio menor, e commit ruim la em
-  -- cima ou download truncado — para tudo e deixa um humano olhar. Sem isto, um
-  -- JSON pela metade nao apagaria nada (o upsert nunca deleta), mas passaria
-  -- despercebido no log como se fosse um dia normal.
-  if v_incoming < v_current then
-    raise exception 'SYNC_SHRANK: upstream=% banco=%', v_incoming, v_current;
-  end if;
-
   -- Id repetido faz o upsert morrer com "ON CONFLICT DO UPDATE command cannot
   -- affect row a second time" — que nao diz nada para quem le o log do cron as
   -- 6 da manha. Melhor falhar aqui, dizendo o que houve.
@@ -1703,6 +1733,20 @@ begin
   if v_dupes > 0 then
     raise exception 'SYNC_DUPLICATE_IDS: % id(s) repetidos no upstream', v_dupes;
   end if;
+
+  select count(*) into v_removing
+  from tasks t
+  where t.removed_at is null
+    and not exists (select 1 from jsonb_array_elements(p_tasks) x where (x->>'id')::uuid = t.id);
+
+  if v_removing > c_max_removed then
+    raise exception 'SYNC_TOO_MANY_REMOVED: % tasks sumiriam de uma vez (limite %)',
+      v_removing, c_max_removed;
+  end if;
+
+  -- Mesmo lock do roll_task: ninguem sorteia uma task no meio da remocao dela,
+  -- nem pega uma que acabou de voltar antes de o tier ser recalculado.
+  perform pg_advisory_xact_lock(hashtext('rs_tasklocked_roll'));
 
   v_tier_before := current_tier_order();
 
@@ -1725,6 +1769,11 @@ begin
            else null end          as tags
     from jsonb_array_elements(p_tasks) t
   ),
+  -- Lido antes do upsert (todo o `with` ve o mesmo snapshot): as que estavam
+  -- removidas e voltaram. Para o grupo, sao tasks novas.
+  revived as (
+    select t.id from tasks t join incoming i on i.id = t.id where t.removed_at is not null
+  ),
   upserted as (
     insert into tasks (id, tier, tier_order, name, short_name, tip, wiki_link,
                        image_link, display_item_id, verification, tags)
@@ -1741,7 +1790,8 @@ begin
       image_link      = excluded.image_link,
       display_item_id = excluded.display_item_id,
       verification    = excluded.verification,
-      tags            = excluded.tags
+      tags            = excluded.tags,
+      removed_at      = null
     -- xmax = 0 identifica a linha que acabou de nascer; qualquer outro valor
     -- veio do caminho do `do update`.
     returning id, tier, tier_order, name, tip, wiki_link, image_link,
@@ -1750,31 +1800,82 @@ begin
   select count(*) filter (where inserted)::int,
          count(*) filter (where not inserted)::int,
          coalesce(json_agg(json_build_object(
-           'id',         id,
-           'tier',       tier,
-           'name',       name,
-           'tip',        tip,
-           'wiki_link',  wiki_link,
-           'image_link', image_link
-         ) order by tier_order, name, id) filter (where inserted), '[]'::json)
+           'id',         u.id,
+           'tier',       u.tier,
+           'name',       u.name,
+           'tip',        u.tip,
+           'wiki_link',  u.wiki_link,
+           'image_link', u.image_link
+         ) order by u.tier_order, u.name, u.id)
+           filter (where u.inserted or u.id in (select id from revived)), '[]'::json)
     into v_inserted, v_updated, v_new
-  from upserted;
+  from upserted u;
+
+  -- As que sumiram do upstream. Quem estava com elas e anotado ANTES de ser
+  -- liberado, para o aviso dizer quem precisa pegar outra.
+  with gone as (
+    update tasks t
+    set removed_at = now()
+    where t.removed_at is null
+      and not exists (select 1 from jsonb_array_elements(p_tasks) x where (x->>'id')::uuid = t.id)
+    returning t.id, t.tier, t.tier_order, t.name, t.wiki_link
+  )
+  select coalesce(json_agg(json_build_object(
+           'id',        g.id,
+           'tier',      g.tier,
+           'name',      g.name,
+           'wiki_link', g.wiki_link,
+           'completed', exists (
+             select 1 from assignments a where a.task_id = g.id and a.status = 'completed'
+           ),
+           'released', coalesce((
+             select json_agg(x.name order by x.name)
+             from (
+               select m.name from assignments a join members m on m.id = a.member_id
+               where a.task_id = g.id and a.status = 'active'
+               union all
+               select m.name || ' (extra)' from extra_assignments e join members m on m.id = e.member_id
+               where e.task_id = g.id and e.status = 'active'
+                 and not exists (
+                   select 1 from assignments a where a.task_id = g.id and a.status = 'completed'
+                 )
+             ) x
+           ), '[]'::json)
+         ) order by g.tier_order, g.name, g.id), '[]'::json)
+    into v_removed
+  from gone g;
+
+  -- Libera. A task principal ativa so pode ser de uma task nao concluida, entao
+  -- sai sempre; o cascade leva junto os pedidos de troca que apontavam para ela.
+  -- A extra ativa so sai se ninguem concluiu a task: sem o assignment que
+  -- acabou de ser apagado, ela viraria extra de uma task livre (regra 4).
+  delete from assignments a
+  using tasks t
+  where t.id = a.task_id and t.removed_at is not null and a.status = 'active';
+
+  delete from extra_assignments e
+  using tasks t
+  where t.id = e.task_id and t.removed_at is not null and e.status = 'active'
+    and not exists (
+      select 1 from assignments a where a.task_id = t.id and a.status = 'completed'
+    );
 
   return json_build_object(
-    'inserted',    v_inserted,
-    'updated',     v_updated,
-    'total',       (select count(*)::int from tasks),
-    'new_tasks',   v_new,
+    'inserted',      v_inserted,
+    'updated',       v_updated,
+    'total',         pool_total(),
+    'new_tasks',     v_new,
+    'removed_tasks', v_removed,
     -- null = o grupo tinha concluido tudo (antes) / continua tudo concluido (depois)
-    'tier_before', v_tier_before,
-    'tier_after',  current_tier_order()
+    'tier_before',   v_tier_before,
+    'tier_after',    current_tier_order()
   );
 end;
 $$;
 
 -- -----------------------------------------------------------------------------
 -- Permissoes: o anon so pode executar as RPCs publicas.
--- auth_member, current_tier_order, swap_request_alive, set_group_code e set_sync_secret sao
+-- auth_member, current_tier_order, pool_total, swap_request_alive, set_group_code e set_sync_secret sao
 -- internas (nao expostas ao PostgREST para o anon).
 --
 -- `sync_tasks` e a excecao que confirma a regra: ela E concedida ao anon, mas
@@ -1783,6 +1884,7 @@ $$;
 
 revoke all on function auth_member(uuid)      from anon, authenticated, public;
 revoke all on function current_tier_order()   from anon, authenticated, public;
+revoke all on function pool_total()           from anon, authenticated, public;
 revoke all on function swap_request_alive(uuid, uuid) from anon, authenticated, public;
 revoke all on function set_group_code(text)   from anon, authenticated, public;
 revoke all on function set_sync_secret(text)  from anon, authenticated, public;
@@ -1816,7 +1918,7 @@ notify pgrst, 'reload schema';
 
 -- =============================================================================
 -- Relatorio final. Se voce esta lendo o resultado deste select no SQL Editor,
--- o arquivo rodou ate o fim. Esperado: 6 tabelas, 5 indices unicos, 24 funcoes.
+-- o arquivo rodou ate o fim. Esperado: 6 tabelas, 5 indices unicos, 25 funcoes.
 -- =============================================================================
 select
   (select count(*) from information_schema.tables
@@ -1835,7 +1937,7 @@ select
       and routine_name in ('join_group','rename_member','get_state','roll_task','complete_task',
                            'undo_complete','list_completed','list_pending',
                            'complete_task_by_id','set_group_code',
-                           'auth_member','current_tier_order',
+                           'auth_member','current_tier_order','pool_total',
                            'take_extra_task','complete_extra_task',
                            'complete_extra_by_id',
                            'abandon_extra_task',
